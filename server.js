@@ -1,0 +1,373 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// RODEO — servidor
+//
+// Dos cosas, nada más:
+//
+//   1. Un bot que es Claude con acceso real a la base. No responde con textos
+//      armados: consulta, razona y contesta. Si algo no cuadra, lo dice.
+//   2. Los datos para el tablero, con todo lo de cada animal.
+//
+// Lo que NO hace: calcular estados con reglas fijas y pasárselos masticados al
+// bot. Eso fue lo que falló antes — cada regla nueva tapaba un caso y destapaba
+// otro. Acá el bot ve los datos y saca sus conclusiones.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const express = require("express");
+const Database = require("better-sqlite3");
+const Anthropic = require("@anthropic-ai/sdk");
+const path = require("path");
+const fs = require("fs");
+
+const app = express();
+app.use(express.json({ limit: "25mb" }));
+app.use(express.urlencoded({ extended: true, limit: "25mb" }));
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Headers", "Content-Type");
+  res.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+  if (req.method === "OPTIONS") return res.sendStatus(200);
+  next();
+});
+
+const VERSION = "rodeo-1.0";
+const PORT = process.env.PORT || 3001;
+const DB_DIR = process.env.DB_DIR || "/data";
+const MODELO = process.env.MODELO || "claude-sonnet-4-6";
+
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const plantelMod = require("./plantel.js");
+
+// ── CAMPOS ───────────────────────────────────────────────────────────────────
+
+const CAMPOS = JSON.parse(process.env.CAMPOS || `{
+  "principal": { "nombre": "Angus del Este", "empresa": "improlux" }
+}`);
+const CAMPO_DEFAULT = Object.keys(CAMPOS)[0];
+const bases = {};
+
+function getDB(key) {
+  const k = CAMPOS[key] ? key : CAMPO_DEFAULT;
+  if (bases[k]) return bases[k];
+  if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
+  const db = new Database(path.join(DB_DIR, `${k}.db`));
+  db.pragma("journal_mode = WAL");
+  crearTablas(db);
+  plantelMod.init(db);
+  bases[k] = db;
+  return db;
+}
+const dbDe = req => getDB(req.query.campo || (req.body && req.body.campo) || CAMPO_DEFAULT);
+
+function crearTablas(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS animales (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      rp TEXT NOT NULL, chip TEXT, sexo TEXT, categoria TEXT,
+      estado TEXT DEFAULT 'ACTIVO', fecha_nac TEXT, pelo TEXT, raza TEXT,
+      madre_rp TEXT, padre_rp TEXT, hbu TEXT, registro TEXT, lote TEXT,
+      notas TEXT, created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(rp));
+    CREATE TABLE IF NOT EXISTS pesadas (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, animal_id INTEGER NOT NULL,
+      fecha TEXT NOT NULL, peso REAL NOT NULL, contexto TEXT, gdp REAL,
+      created_at TEXT DEFAULT (datetime('now')));
+    CREATE TABLE IF NOT EXISTS servicios (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, animal_id INTEGER NOT NULL,
+      temporada TEXT, tipo_servicio TEXT, semen_iatf TEXT, fecha_iatf TEXT,
+      toro_natural TEXT, fecha_ingreso_toro TEXT, fecha_salida_toro TEXT,
+      resultado TEXT, fecha_tacto TEXT, notas TEXT,
+      created_at TEXT DEFAULT (datetime('now')));
+    CREATE TABLE IF NOT EXISTS mediciones (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, animal_id INTEGER NOT NULL,
+      fecha TEXT NOT NULL, tipo TEXT NOT NULL, valor REAL,
+      created_at TEXT DEFAULT (datetime('now')));
+    CREATE TABLE IF NOT EXISTS sanidad (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, animal_id INTEGER NOT NULL,
+      fecha TEXT NOT NULL, producto TEXT, dosis TEXT, motivo TEXT,
+      created_at TEXT DEFAULT (datetime('now')));
+    CREATE INDEX IF NOT EXISTS idx_pes_an ON pesadas(animal_id);
+    CREATE INDEX IF NOT EXISTS idx_ser_an ON servicios(animal_id);
+    CREATE INDEX IF NOT EXISTS idx_med_an ON mediciones(animal_id);
+    CREATE INDEX IF NOT EXISTS idx_ani_madre ON animales(madre_rp);
+  `);
+}
+
+// ── EL BOT ───────────────────────────────────────────────────────────────────
+//
+// Claude con dos herramientas: consultar la base y escribir en ella. No hay
+// intenciones precocinadas ni un menú de acciones: entiende lo que le piden y
+// arma la consulta o el cambio que corresponda.
+
+function esquema(db) {
+  const tablas = db.prepare(`SELECT name FROM sqlite_master WHERE type='table'
+    AND name NOT LIKE 'sqlite_%'`).all().map(t => t.name);
+  return tablas.map(t => {
+    const cols = db.prepare(`PRAGMA table_info(${t})`).all()
+      .map(c => `${c.name} ${c.type}`).join(", ");
+    const n = db.prepare(`SELECT COUNT(*) n FROM ${t}`).get().n;
+    return `${t} (${cols}) — ${n} registros`;
+  }).join("\n");
+}
+
+const HERRAMIENTAS = [
+  {
+    name: "consultar",
+    description: "Ejecuta un SELECT sobre la base del campo y devuelve las filas. " +
+      "Usalo para averiguar cualquier cosa antes de responder. Podés llamarlo varias veces " +
+      "si necesitás cruzar datos o verificar algo que no te cierra.",
+    input_schema: {
+      type: "object",
+      properties: {
+        sql: { type: "string", description: "Un SELECT. Sólo lectura." },
+        porque: { type: "string", description: "Qué estás tratando de averiguar con esto." }
+      },
+      required: ["sql"]
+    }
+  },
+  {
+    name: "escribir",
+    description: "Ejecuta un INSERT, UPDATE o DELETE. Usalo sólo cuando te piden cargar o " +
+      "corregir algo, y después de haber verificado con `consultar` que tiene sentido. " +
+      "Contá siempre qué escribiste.",
+    input_schema: {
+      type: "object",
+      properties: {
+        sql: { type: "string", description: "INSERT, UPDATE o DELETE." },
+        params: { type: "array", items: {}, description: "Valores para los ? del SQL." },
+        que: { type: "string", description: "Qué estás cambiando, en una línea." }
+      },
+      required: ["sql", "que"]
+    }
+  }
+];
+
+function correrConsulta(db, sql) {
+  const limpio = String(sql).trim().replace(/;+\s*$/, "");
+  if (!/^select\b/i.test(limpio)) throw new Error("Sólo SELECT en consultar");
+  if (/;/.test(limpio)) throw new Error("Una sola consulta por vez");
+  const filas = db.prepare(limpio).all();
+  // Un resultado enorme no aporta: se recorta y se avisa.
+  if (filas.length > 300) return { filas: filas.slice(0, 300), total: filas.length, recortado: true };
+  return { filas, total: filas.length };
+}
+
+function correrEscritura(db, sql, params) {
+  const limpio = String(sql).trim().replace(/;+\s*$/, "");
+  if (!/^(insert|update|delete)\b/i.test(limpio)) throw new Error("Sólo INSERT, UPDATE o DELETE en escribir");
+  if (/;/.test(limpio)) throw new Error("Una sola sentencia por vez");
+  if (/\bdrop\b|\balter\b|\btruncate\b/i.test(limpio)) throw new Error("No puedo hacer eso");
+  const r = db.prepare(limpio).run(...(params || []));
+  return { cambios: r.changes, id: r.lastInsertRowid };
+}
+
+function instrucciones(db, campoNombre) {
+  const hoy = new Date().toISOString().slice(0, 10);
+  const cal = plantelMod.calendario(db);
+  return `Sos el asistente de ${campoNombre}, una cabaña de Angus. HOY ES ${hoy}.
+
+Tenés acceso directo a la base del campo. Consultá lo que necesites antes de responder: no adivines
+ni respondas de memoria. Si algo no te cierra, consultá otra vez desde otro ángulo.
+
+ESTRUCTURA DE LA BASE:
+${esquema(db)}
+
+EL CALENDARIO DE ESTE CAMPO, sacado de sus propios registros:
+Servicios: ${cal.servicios.map(s => `${s.temporada} (${s.desde} a ${s.hasta}, ${s.n} vientres)`).join(" · ") || "sin datos"}
+Pariciones: ${cal.pariciones.map(p => `${p.anio} (${p.primero} a ${p.ultimo}, ${p.n} terneros)`).join(" · ") || "sin datos"}
+
+LO QUE SABÉS DE GANADERÍA y no hace falta que nadie te cargue:
+· La gestación de un bovino son 283 días.
+· Una vaca desteta un ternero por año. El destete es a los 6-8 meses del parto.
+· Un tacto "PREÑADA" dice que estaba preñada ESE DÍA. Va a parir unos nueve meses y medio
+  después del SERVICIO, no del tacto.
+· Cabeza, cuerpo y cola son tramos de la parición. Cuanto antes pare, más pesado llega el
+  ternero al destete.
+· Lo que mide de verdad a una vaca es cuánto desteta EN RELACIÓN A SU PROPIO PESO: una de
+  430 kg que desteta 255 rinde 59%, mejor que una de 600 que desteta 250 (42%), porque come
+  menos todo el año.
+· De dónde vino una preñez se confirma con la fecha de nacimiento: ±10 días de la fecha
+  probable de la IATF es IATF; después, tramos de 20 días son toro cabeza, cuerpo y cola.
+
+EL ERROR QUE NO PODÉS COMETER: si una vaca figura preñada y no tiene cría registrada, NO
+concluyas que abortó sin mirar CUÁNDO fue el servicio. Si fue hace menos de nueve meses, esa
+vaca simplemente todavía no parió. Es la diferencia entre un problema sanitario y una parición
+que está por empezar.
+
+CÓMO TRABAJAR:
+· Consultá primero, respondé después. Cruzá datos si hace falta.
+· Decí lo que concluís y en qué te basás, con las fechas en la mano.
+· Si los datos no alcanzan para responder, decilo. No inventes.
+· Si encontrás algo que está mal cargado — una fecha imposible, una vaca con dos crías el
+  mismo año, un peso que no cierra con su historia — avisalo aunque no te lo hayan preguntado.
+· Cuando te pidan cargar o corregir algo, verificá primero que exista y tenga sentido, después
+  escribí, y contá qué hiciste.
+
+CÓMO HABLAR: como un asesor que conoce el campo. Frases cortas, sin listas de más, sin repetir
+la pregunta. Números concretos. Si algo es una estimación, decilo.`;
+}
+
+async function conversar(db, campoNombre, mensajes, opciones = {}) {
+  const pasos = [];
+  let historia = [...mensajes];
+
+  for (let vuelta = 0; vuelta < 8; vuelta++) {
+    const r = await anthropic.messages.create({
+      model: MODELO,
+      max_tokens: 2000,
+      system: instrucciones(db, campoNombre),
+      tools: HERRAMIENTAS,
+      messages: historia
+    });
+
+    const usos = (r.content || []).filter(c => c.type === "tool_use");
+    if (!usos.length) {
+      const texto = (r.content || []).filter(c => c.type === "text").map(c => c.text).join("\n");
+      return { respuesta: texto.trim(), pasos };
+    }
+
+    historia.push({ role: "assistant", content: r.content });
+    const resultados = [];
+    for (const u of usos) {
+      let out;
+      try {
+        if (u.name === "consultar") {
+          out = correrConsulta(db, u.input.sql);
+          pasos.push({ tipo: "consulta", sql: u.input.sql, porque: u.input.porque, filas: out.total });
+        } else if (u.name === "escribir") {
+          if (opciones.soloLectura) throw new Error("Esta sesión es de sólo lectura");
+          out = correrEscritura(db, u.input.sql, u.input.params);
+          pasos.push({ tipo: "escritura", que: u.input.que, cambios: out.cambios });
+        } else out = { error: "herramienta desconocida" };
+      } catch (e) {
+        out = { error: e.message };
+        pasos.push({ tipo: "error", detalle: e.message });
+      }
+      resultados.push({ type: "tool_result", tool_use_id: u.id, content: JSON.stringify(out) });
+    }
+    historia.push({ role: "user", content: resultados });
+  }
+  return { respuesta: "Me quedé dando vueltas sin llegar a una respuesta. Probá preguntándomelo de otra forma.", pasos };
+}
+
+// ── API ──────────────────────────────────────────────────────────────────────
+
+app.get("/api/campos", (req, res) => {
+  res.json(Object.entries(CAMPOS).map(([key, c]) => {
+    let n = 0;
+    try { n = getDB(key).prepare("SELECT COUNT(*) n FROM animales WHERE upper(COALESCE(estado,'ACTIVO'))='ACTIVO'").get().n; }
+    catch (e) {}
+    return { key, nombre: c.nombre, empresa: c.empresa, animales: n };
+  }));
+});
+
+// Todo el plantel con los datos de cada vaca.
+app.get("/api/plantel", (req, res) => {
+  try { res.json(plantelMod.plantel(dbDe(req), { anio: req.query.anio })); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/ficha/:rp", (req, res) => {
+  try {
+    const f = plantelMod.ficha(dbDe(req), req.params.rp);
+    res.status(f.ok ? 200 : 404).json(f);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Todos los animales, para las otras vistas del tablero.
+app.get("/api/animales", (req, res) => {
+  const db = dbDe(req);
+  try {
+    res.json(db.prepare(`
+      SELECT a.*,
+        (SELECT peso FROM pesadas p WHERE p.animal_id=a.id AND upper(COALESCE(p.contexto,''))='NACIMIENTO'
+         ORDER BY p.fecha LIMIT 1) peso_nac,
+        (SELECT peso FROM pesadas p WHERE p.animal_id=a.id AND upper(COALESCE(p.contexto,''))='DESTETE'
+         ORDER BY p.fecha DESC LIMIT 1) destete,
+        (SELECT peso FROM pesadas p WHERE p.animal_id=a.id ORDER BY p.fecha DESC LIMIT 1) peso_actual,
+        (SELECT fecha FROM pesadas p WHERE p.animal_id=a.id ORDER BY p.fecha DESC LIMIT 1) ultima_pesada,
+        (SELECT COUNT(*) FROM animales h WHERE upper(COALESCE(h.madre_rp,''))=upper(a.rp)) crias
+      FROM animales a
+      WHERE upper(COALESCE(a.estado,'ACTIVO')) = ?
+      ORDER BY a.rp`).all(String(req.query.estado || "ACTIVO").toUpperCase()));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/api/notas", (req, res) => {
+  const { rp, texto } = req.body;
+  if (!rp || !texto) return res.status(400).json({ error: "Falta el RP o el texto" });
+  const db = dbDe(req);
+  const a = db.prepare("SELECT rp FROM animales WHERE upper(rp)=upper(?)").get(String(rp).trim());
+  if (!a) return res.status(404).json({ error: `No encuentro ${rp}` });
+  try { res.json(plantelMod.guardarNota(db, a.rp, texto, req.body)); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/notas", (req, res) => {
+  const db = dbDe(req);
+  try {
+    res.json(req.query.rp
+      ? db.prepare("SELECT * FROM notas_campo WHERE upper(animal_rp)=upper(?) ORDER BY fecha DESC").all(req.query.rp)
+      : db.prepare("SELECT * FROM notas_campo ORDER BY fecha DESC LIMIT 200").all());
+  } catch (e) { res.json([]); }
+});
+
+// El chat. Es Claude con la base en la mano.
+app.post("/api/chat", async (req, res) => {
+  const { mensaje, historia } = req.body;
+  if (!mensaje) return res.status(400).json({ error: "Falta el mensaje" });
+  const campoKey = req.query.campo || req.body.campo || CAMPO_DEFAULT;
+  const db = getDB(campoKey);
+  const nombre = (CAMPOS[campoKey] || {}).nombre || "el campo";
+  try {
+    const msgs = [...(Array.isArray(historia) ? historia : []), { role: "user", content: mensaje }];
+    const r = await conversar(db, nombre, msgs, { soloLectura: req.body.solo_lectura });
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message, respuesta: `No pude procesarlo: ${e.message}` });
+  }
+});
+
+// WhatsApp: responde vacío y manda la respuesta después, para no cortar por tiempo.
+app.post("/webhook", async (req, res) => {
+  res.type("text/xml").send("<Response></Response>");
+  const de = req.body.From || "";
+  const texto = req.body.Body || "";
+  if (!texto.trim()) return;
+  const db = getDB(CAMPO_DEFAULT);
+  try {
+    const r = await conversar(db, CAMPOS[CAMPO_DEFAULT].nombre, [{ role: "user", content: texto }]);
+    if (process.env.TWILIO_SID) {
+      const twilio = require("twilio")(process.env.TWILIO_SID, process.env.TWILIO_TOKEN);
+      await twilio.messages.create({ from: req.body.To, to: de, body: r.respuesta.slice(0, 1500) });
+    }
+  } catch (e) { console.error("webhook:", e.message); }
+});
+
+app.get("/api/salud", (req, res) => {
+  const out = { version: VERSION, campos: {} };
+  for (const k of Object.keys(CAMPOS)) {
+    try {
+      const db = getDB(k);
+      out.campos[k] = {
+        nombre: CAMPOS[k].nombre,
+        animales: db.prepare("SELECT COUNT(*) n FROM animales").get().n,
+        vientres: plantelMod.plantel(db).filas.length
+      };
+    } catch (e) { out.campos[k] = { error: e.message }; }
+  }
+  res.json(out);
+});
+
+app.use(express.static(path.join(__dirname, "public")));
+app.get("/", (req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
+
+app.listen(PORT, () => {
+  console.log(`${VERSION} en el puerto ${PORT}`);
+  for (const k of Object.keys(CAMPOS)) {
+    try {
+      const db = getDB(k);
+      const n = db.prepare("SELECT COUNT(*) n FROM animales").get().n;
+      console.log(`  ${CAMPOS[k].nombre} (${k}): ${n} animales`);
+    } catch (e) { console.log(`  ${k}: ${e.message}`); }
+  }
+});
