@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RODEO</title>
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@300;400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --azul:#0B3D7C; --azul2:#072957; --oro:#C9A24B; --tinta:#10243f;
+  --papel:#F7F3EC; --linea:#E2D9CB; --gris:#8A827A;
+  --verde:#1a7a4a; --rojo:#B83232;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--papel);color:var(--tinta);font-family:Oswald,system-ui,sans-serif;
+  font-weight:300;font-size:14px;display:flex;min-height:100vh}
+.mono{font-family:'JetBrains Mono',monospace}
+main{flex:1;min-width:0;display:flex;flex-direction:column}
+
+header{background:var(--azul2);color:#fff;padding:15px 20px 0}
+.brand{font-size:22px;font-weight:600;letter-spacing:2.5px}
+.sub{font-size:11px;color:var(--oro);letter-spacing:2px;margin-top:3px;text-transform:uppercase}
+.tabs{display:flex;gap:2px;margin-top:14px;flex-wrap:wrap}
+.tab{background:rgba(255,255,255,.09);color:rgba(255,255,255,.72);border:none;padding:10px 20px;
+  font-family:inherit;font-size:12px;letter-spacing:1.6px;text-transform:uppercase;cursor:pointer;border-radius:4px 4px 0 0}
+.tab:hover{background:rgba(255,255,255,.16);color:#fff}
+.tab.on{background:var(--papel);color:var(--azul);font-weight:600}
+.selc{margin-left:auto;background:rgba(255,255,255,.1);color:#fff;border:1px solid rgba(255,255,255,.25);
+  border-radius:4px;padding:5px 9px;font-family:inherit;font-size:12px;align-self:center;margin-bottom:10px}
+.selc option{color:#111}
+.franja{height:4px;background:var(--oro)}
+
+.kpis{display:flex;gap:1px;background:var(--linea);border-bottom:1px solid var(--linea);flex-wrap:wrap}
+.kpi{background:#fff;padding:12px 18px;flex:1;min-width:116px;cursor:pointer;transition:.12s}
+.kpi:hover{background:#FAF7F0}
+.kpi b{display:block;font-size:25px;font-weight:500;color:var(--azul);line-height:1.1}
+.kpi span{font-size:9.5px;letter-spacing:1.1px;text-transform:uppercase;color:var(--gris)}
+.kpi.al b{color:var(--rojo)} .kpi.bien b{color:var(--verde)} .kpi.oro b{color:#B8860B}
+
+.bar{position:sticky;top:0;z-index:30;background:#fff;border-bottom:1px solid var(--linea);
+  padding:10px 20px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;box-shadow:0 2px 6px rgba(0,0,0,.06)}
+.bar input,.bar select{font-family:inherit;font-size:12.5px;padding:7px 10px;border:1px solid var(--linea);
+  border-radius:4px;background:#fff;color:var(--tinta)}
+.bar input[type=text]{min-width:220px;flex:1;max-width:380px}
+.bar input:focus,.bar select:focus{outline:none;border-color:var(--azul)}
+.btn{background:var(--azul);color:#fff;border:none;border-radius:4px;padding:7px 15px;font-family:inherit;
+  font-size:11.5px;font-weight:500;letter-spacing:1.2px;text-transform:uppercase;cursor:pointer}
+.btn:hover{background:var(--azul2)} .btn.g{background:#fff;color:var(--tinta);border:1px solid var(--linea)}
+.count{margin-left:auto;font-size:11px;color:var(--gris);letter-spacing:1px;text-transform:uppercase}
+
+.scroll{flex:1;overflow:auto;padding:14px 20px 40px}
+table{width:100%;border-collapse:collapse;font-size:13px;background:#fff;min-width:1080px}
+thead th{background:var(--azul2);color:#fff;text-align:left;font-size:9.5px;letter-spacing:1.2px;
+  text-transform:uppercase;font-weight:400;padding:11px 8px;white-space:nowrap;cursor:pointer;position:sticky;top:0;z-index:5}
+thead th:hover{background:var(--azul)}
+th.num,td.num{text-align:right}
+th .fl{color:var(--oro);margin-left:4px}
+td{padding:8px;border-bottom:1px solid var(--linea);white-space:nowrap}
+tbody tr:hover{background:#FAF7F0;cursor:pointer}
+td.rp{font-weight:500;font-size:14.5px}
+td.num{font-family:'JetBrains Mono',monospace;font-size:12px}
+.mut{color:var(--gris)} .al{color:var(--rojo);font-weight:500} .bi{color:var(--verde);font-weight:500}
+tr.fallo td{background:rgba(184,50,50,.05)}
+.tag{font-size:9px;letter-spacing:1.1px;text-transform:uppercase;padding:2px 8px;border-radius:2px;font-weight:500}
+.t-cabeza{background:rgba(26,122,74,.14);color:var(--verde)}
+.t-cuerpo{background:rgba(11,61,124,.11);color:var(--azul)}
+.t-cola{background:rgba(201,162,75,.24);color:#8A6D28}
+.t-tardia{background:rgba(184,50,50,.12);color:var(--rojo)}
+.t-preñada{background:rgba(11,61,124,.11);color:var(--azul)}
+.t-criando{background:rgba(201,162,75,.24);color:#8A6D28}
+.t-destetó{background:rgba(26,122,74,.14);color:var(--verde)}
+.t-falló{background:rgba(184,50,50,.12);color:var(--rojo)}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:5px;vertical-align:middle}
+.vacio{text-align:center;padding:44px;color:var(--gris);background:#fff}
+.aviso{background:#fff;border-left:3px solid var(--oro);padding:9px 14px;margin:0 20px 12px;
+  font-size:12px;color:var(--gris)}
+
+/* ── Ficha ─────────────────────────────────────────────────────────── */
+.ov{position:fixed;inset:0;background:rgba(16,36,63,.5);display:none;align-items:flex-start;
+  justify-content:center;padding:22px 14px;z-index:60;overflow:auto}
+.ov.on{display:flex}
+.card{background:var(--papel);border-radius:4px;max-width:980px;width:100%;overflow:hidden}
+.ct{background:var(--azul2);color:#fff;padding:18px 24px;display:flex;align-items:flex-start;gap:14px}
+.ct h2{margin:0;font-size:29px;font-weight:600;letter-spacing:1.5px;line-height:1}
+.ct .id{font-size:11px;color:var(--oro);letter-spacing:1.6px;margin-top:4px;text-transform:uppercase}
+.ct button{margin-left:auto;background:rgba(255,255,255,.1);color:#fff;border:1px solid rgba(255,255,255,.3);
+  width:32px;height:32px;border-radius:3px;cursor:pointer;font-size:15px}
+.cb{padding:20px 24px 26px}
+.fk{display:flex;gap:1px;background:var(--linea);border:1px solid var(--linea);flex-wrap:wrap;margin-bottom:22px}
+.fk>div{background:#fff;padding:11px 15px;flex:1;min-width:110px}
+.fk span{font-size:9px;letter-spacing:1.2px;text-transform:uppercase;color:var(--gris);display:block}
+.fk b{font-size:20px;font-weight:500;display:block;margin-top:2px}
+h3.s{font-size:12.5px;letter-spacing:2px;text-transform:uppercase;color:var(--azul);
+  font-weight:500;margin:0 0 10px;border-bottom:2px solid var(--linea);padding-bottom:6px}
+.corr{background:rgba(201,162,75,.16);color:#8A6D28;font-size:9px;padding:1px 6px;border-radius:2px;margin-left:6px}
+.notaCaja{display:flex;gap:8px;margin-top:12px}
+.notaCaja input{flex:1;font-family:inherit;font-size:13px;padding:9px 12px;border:1px solid var(--linea);border-radius:4px}
+
+/* ── Chat ──────────────────────────────────────────────────────────── */
+.chat{width:340px;flex:0 0 340px;background:#fff;border-left:1px solid var(--linea);
+  display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+.chh{padding:13px 16px;border-bottom:1px solid var(--linea);background:var(--papel)}
+.chh b{font-size:12px;font-weight:500;letter-spacing:1.4px;text-transform:uppercase;display:block}
+.chh span{font-size:11.5px;color:var(--gris);line-height:1.45;display:block;margin-top:3px}
+.msgs{flex:1;overflow:auto;padding:14px 16px;display:flex;flex-direction:column;gap:11px}
+.msg{max-width:90%;padding:9px 12px;border-radius:9px;font-size:13px;line-height:1.55;white-space:pre-wrap}
+.msg.yo{align-self:flex-end;background:var(--azul);color:#fff;border-bottom-right-radius:2px}
+.msg.bot{align-self:flex-start;background:var(--papel);border:1px solid var(--linea);border-bottom-left-radius:2px}
+.msg.pen{color:var(--gris);font-style:italic}
+.pasos{font-size:10.5px;color:var(--gris);margin-top:6px;padding-top:6px;border-top:1px solid var(--linea)}
+.sug{display:flex;flex-direction:column;gap:6px;padding:0 16px 12px}
+.sug button{background:var(--papel);border:1px solid var(--linea);border-radius:14px;padding:6px 12px;
+  font-family:inherit;font-size:12px;color:var(--gris);cursor:pointer;text-align:left}
+.sug button:hover{border-color:var(--azul);color:var(--azul)}
+.env{border-top:1px solid var(--linea);padding:11px 14px;display:flex;gap:8px}
+.env input{flex:1;font-family:inherit;font-size:13px;padding:9px 12px;border:1px solid var(--linea);border-radius:18px}
+.env input:focus{outline:none;border-color:var(--azul)}
+.env button{background:var(--azul);color:#fff;border:none;border-radius:50%;width:36px;height:36px;cursor:pointer;font-size:15px}
+@media(max-width:1000px){ body{flex-direction:column} .chat{width:100%;flex:none;height:auto;max-height:400px;position:static} }
+</style>
+</head>
+<body>
+
+<main>
+  <header>
+    <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap">
+      <div><div class="brand" id="hBrand">RODEO</div>
+        <div class="sub" id="hSub">Conectando…</div></div>
+      <select class="selc" id="selCampo" onchange="cambiarCampo()"></select>
+    </div>
+    <div class="tabs">
+      <button class="tab on" data-v="plantel" onclick="verVista(this)">Plantel</button>
+      <button class="tab" data-v="nac" onclick="verVista(this)">Nacimientos</button>
+      <button class="tab" data-v="recria" onclick="verVista(this)">Recría</button>
+      <button class="tab" data-v="fallos" onclick="verVista(this)">No destetaron</button>
+    </div>
+  </header>
+  <div class="franja"></div>
+
+  <div class="kpis" id="kpis"></div>
+  <div id="avisos"></div>
+
+  <div class="bar">
+    <input type="text" id="q" placeholder="Buscar RP, HBA, caravana, padre o madre…" oninput="pintar()">
+    <select id="fpel" onchange="pintar()"><option value="">Pelaje: todos</option></select>
+    <select id="fcat" onchange="pintar()"><option value="">Categoría: todas</option></select>
+    <select id="fest" onchange="pintar()"><option value="">Estado: todos</option></select>
+    <select id="fblo" onchange="pintar()">
+      <option value="">Bloque: todos</option><option value="CABEZA">Cabeza</option>
+      <option value="CUERPO">Cuerpo</option><option value="COLA">Cola</option><option value="TARDIA">Tardía</option>
+    </select>
+    <button class="btn g" onclick="bajarCsv()">CSV</button>
+    <div class="count" id="cnt"></div>
+  </div>
+
+  <div class="scroll"><table>
+    <thead><tr id="thead"></tr></thead>
+    <tbody id="tbody"><tr><td colspan="15" class="vacio">Cargando…</td></tr></tbody>
+  </table></div>
+</main>
+
+<div class="chat">
+  <div class="chh"><b>Preguntar</b>
+    <span>Consulta la base y razona. Preguntale lo que quieras del rodeo.</span></div>
+  <div class="msgs" id="msgs"></div>
+  <div class="sug" id="sug"></div>
+  <div class="env">
+    <input id="txt" placeholder="Escribí lo que necesitás…" onkeydown="if(event.key==='Enter')enviar()">
+    <button onclick="enviar()">↑</button>
+  </div>
+</div>
+
+<div class="ov" id="ov" onclick="if(event.target===this)this.classList.remove('on')">
+  <div class="card" id="ovCard"></div></div>
+
+<script>
+const API = location.origin.includes('file') ? 'http://localhost:3001' : location.origin;
+let campo = new URLSearchParams(location.search).get('campo') || localStorage.getItem('campo') || '';
+let D = null, vista = 'plantel', orden = { col:'rp', desc:false }, historia = [];
+
+const esc = t => String(t==null?'':t).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+const dash = v => v==null||v===''?'<span class="mut">—</span>':esc(v);
+const fec = f => f? String(f).slice(8,10)+'/'+String(f).slice(5,7)+'/'+String(f).slice(2,4) : '';
+const tag = b => b?`<span class="tag t-${String(b).toLowerCase()}">${esc(b)}</span>`:'<span class="mut">—</span>';
+const punto = p => p?`<span class="dot" style="background:${/COLOR/i.test(p)?'#9C5B2E':'#2B2B2B'}"></span>${esc(p)}`:'<span class="mut">—</span>';
+
+// Las columnas de cada vista.
+const VISTAS = {
+  plantel: { titulo:'Plantel', cols:[
+    {k:'rp',t:'RP',cls:'rp'},
+    {k:'hba',t:'HBA / Elec.',cls:'mut',fmt:(v,f)=>dash(f.hba||f.chip)},
+    {k:'pelo',t:'Pelaje',fmt:v=>punto(v)},
+    {k:'categoria',t:'Categoría',cls:'mut'},
+    {k:'edad_meses',t:'Edad (m)',num:1},
+    {k:'peso_adulto',t:'P. adulto',num:1},
+    {k:'partos',t:'Partos',num:1},
+    {k:'pn_prom',t:'PN prom',num:1},
+    {k:'destete_prom',t:'Destete prom',num:1},
+    {k:'eficiencia',t:'Efic. %',num:1,fmt:v=>v==null?'—':`<span class="${v>=55?'bi':v<45?'al':''}">${v}%</span>`},
+    {k:'ipp',t:'Int. partos',num:1,fmt:v=>v==null?'—':`<span class="${v>420?'al':''}">${v}</span>`},
+    {k:'ternero',t:'Ternero 2026',fmt:(v,f)=>v?esc(v):(f.estado==='PREÑADA'?'<span class="mut">por parir</span>':'<span class="mut">—</span>')},
+    {k:'tacto',t:'Tacto',cls:'mut',fmt:v=>esc(String(v||'').replace(/PREÑADA_?/,''))||'—'},
+    {k:'bloque',t:'Bloque real',fmt:v=>tag(v)},
+    {k:'estado',t:'Estado',fmt:(v,f)=>f.causa_texto?`<span class="al">${esc(f.causa_texto)}</span>`:tag(v)}
+  ]},
+  nac: { titulo:'Nacimientos', cols:[
+    {k:'rp',t:'RP',cls:'rp'},
+    {k:'fecha_nac',t:'Nacimiento',cls:'mut',fmt:v=>fec(v)||'—'},
+    {k:'sexo',t:'Sexo',fmt:v=>String(v||'').toUpperCase().startsWith('M')?'Macho':'Hembra'},
+    {k:'pelo',t:'Pelaje',fmt:v=>punto(v)},
+    {k:'madre_rp',t:'Madre',fmt:(v)=>v?esc(v):'<span class="al">falta</span>'},
+    {k:'padre_rp',t:'Padre'},
+    {k:'peso_nac',t:'P. nacer',num:1,fmt:v=>v==null?'<span class="al">falta</span>':v},
+    {k:'destete',t:'Destete',num:1},
+    {k:'chip',t:'Caravana',cls:'mut',fmt:v=>v?esc(v):'<span class="mut">—</span>'}
+  ]},
+  recria: { titulo:'Recría', cols:[
+    {k:'rp',t:'RP',cls:'rp'},
+    {k:'fecha_nac',t:'Nacimiento',cls:'mut',fmt:v=>fec(v)||'—'},
+    {k:'meses',t:'Edad (m)',num:1},
+    {k:'sexo',t:'Sexo',fmt:v=>String(v||'').toUpperCase().startsWith('M')?'Macho':'Hembra'},
+    {k:'padre_rp',t:'Padre'},
+    {k:'destete',t:'Destete',num:1},
+    {k:'peso_actual',t:'Peso',num:1},
+    {k:'ultima_pesada',t:'Última pesada',cls:'mut',fmt:v=>fec(v)||'—'},
+    {k:'categoria',t:'Categoría',cls:'mut'}
+  ]},
+  fallos: { titulo:'No destetaron', cols:[
+    {k:'rp',t:'RP',cls:'rp'},
+    {k:'causa_texto',t:'Motivo',fmt:v=>`<span class="al">${esc(v||'—')}</span>`},
+    {k:'tacto',t:'Tacto',cls:'mut',fmt:v=>esc(String(v||'').replace(/PREÑADA_?/,''))||'—'},
+    {k:'servicio',t:'Servicio',cls:'mut',fmt:v=>fec(v)||'—'},
+    {k:'edad_meses',t:'Edad (m)',num:1},
+    {k:'partos',t:'Partos',num:1},
+    {k:'destete_prom',t:'Destete prom',num:1},
+    {k:'eficiencia',t:'Efic. %',num:1,fmt:v=>v==null?'—':v+'%'}
+  ]}
+};
+
+async function cargar(){
+  try{
+    const campos = await fetch(`${API}/api/campos`).then(r=>r.json());
+    const sel=document.getElementById('selCampo');
+    sel.innerHTML = campos.map(c=>`<option value="${c.key}" ${c.key===campo?'selected':''}>${esc(c.nombre)} — ${c.animales} cab.</option>`).join('');
+    sel.style.display = campos.length>1?'':'none';
+    const act = campos.find(c=>c.key===campo)||campos[0];
+    if(act){ campo=act.key; document.getElementById('hBrand').textContent=act.nombre.toUpperCase(); }
+  }catch(e){}
+
+  const url = q => `${API}${q}${q.includes('?')?'&':'?'}campo=${encodeURIComponent(campo)}`;
+  try{
+    const [pl, an] = await Promise.all([
+      fetch(url('/api/plantel')).then(r=>r.json()),
+      fetch(url('/api/animales')).then(r=>r.json())
+    ]);
+    if(pl.error) throw new Error(pl.error);
+    D = { plantel: pl, animales: Array.isArray(an)?an:[] };
+    document.getElementById('hSub').textContent =
+      `${pl.filas.length} vientres · parición ${pl.anio_paricion} · ${D.animales.length} animales`;
+    llenarFiltros(); pintar(); saludo();
+  }catch(e){
+    document.getElementById('hSub').textContent = e.message;
+    document.getElementById('tbody').innerHTML=`<tr><td colspan="15" class="vacio">${esc(e.message)}</td></tr>`;
+  }
+}
+function cambiarCampo(){ campo=document.getElementById('selCampo').value; localStorage.setItem('campo',campo); location.reload(); }
+
+// Los filtros se arman con lo que hay en los datos, no con listas fijas.
+function llenarFiltros(){
+  const filas = datosDe(vista);
+  const uniq = k => [...new Set(filas.map(f=>f[k]).filter(Boolean))].sort();
+  const sel=(id,vals,pre)=>{
+    const e=document.getElementById(id), act=e.value;
+    e.innerHTML=`<option value="">${pre}</option>`+vals.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');
+    e.value = vals.includes(act)?act:'';
+  };
+  sel('fpel', uniq('pelo'), 'Pelaje: todos');
+  sel('fcat', uniq('categoria'), 'Categoría: todas');
+  sel('fest', uniq('estado'), 'Estado: todos');
+}
+
+function datosDe(v){
+  if(!D) return [];
+  if(v==='plantel') return D.plantel.filas;
+  if(v==='fallos') return D.plantel.filas.filter(f=>f.estado==='FALLÓ');
+  const anio = D.plantel.anio_paricion;
+  if(v==='nac') return D.animales.filter(a=>String(a.fecha_nac||'').startsWith(anio));
+  if(v==='recria'){
+    const hoy=new Date();
+    return D.animales.filter(a=>{
+      if(!a.fecha_nac) return false;
+      const m=Math.floor((hoy-new Date(a.fecha_nac))/(30.44*86400000));
+      a.meses=m; return m>=6 && m<=24;
+    });
+  }
+  return [];
+}
+
+function pintar(){
+  if(!D) return;
+  const R = D.plantel.resumen;
+  const conf = VISTAS[vista];
+  const filas = filtrar();
+
+  // Los KPIs filtran al clickearlos.
+  const kp = vista==='plantel' ? [
+    [D.plantel.filas.length,'Vientres','',''],
+    [R.prenadas,'Preñadas','bien','PREÑADA'],
+    [R.criando,'Criando','','CRIANDO'],
+    [R.destetaron,'Destetaron','bien','DESTETÓ'],
+    [R.fallaron,'No destetaron',R.fallaron?'al':'','FALLÓ'],
+    [R.destete_efectivo!=null?R.destete_efectivo+'%':'—','Destete efectivo','',''],
+    [R.peso_adulto_prom||'—','P. adulto prom','',''],
+    [R.destete_prom||'—','Destete prom','',''],
+    [R.eficiencia_prom!=null?R.eficiencia_prom+'%':'—','Eficiencia','oro',''],
+    [R.ipp_prom||'—','Int. partos','','']
+  ] : [[filas.length, conf.titulo,'','']];
+  document.getElementById('kpis').innerHTML = kp.map(([n,t,c,f])=>
+    `<div class="kpi ${c||''}" onclick="filtrarEstado('${f||''}')"><b>${n}</b><span>${t}</span></div>`).join('');
+
+  document.getElementById('avisos').innerHTML = (vista==='plantel' && R.avisos && R.avisos.length)
+    ? R.avisos.map(a=>`<div class="aviso"><b>${a.n}</b> ${esc(a.texto)}</div>`).join('') : '';
+
+  document.getElementById('thead').innerHTML = conf.cols.map(c=>
+    `<th class="${c.num?'num':''}" onclick="ordenar('${c.k}')">${c.t}${
+      orden.col===c.k?`<span class="fl">${orden.desc?'▼':'▲'}</span>`:''}</th>`).join('');
+
+  document.getElementById('cnt').textContent = `${filas.length} de ${datosDe(vista).length}`;
+  document.getElementById('tbody').innerHTML = filas.length ? filas.map(f=>
+    `<tr class="${f.estado==='FALLÓ'?'fallo':''}" onclick="abrirFicha('${esc(f.rp)}')">${
+      conf.cols.map(c=>{
+        const v=f[c.k];
+        const txt=c.fmt?c.fmt(v,f):(v==null||v===''?'<span class="mut">—</span>':esc(v));
+        return `<td class="${c.cls||''} ${c.num?'num':''}">${txt}</td>`;
+      }).join('')}</tr>`).join('')
+    : `<tr><td colspan="${conf.cols.length}" class="vacio">Nada con esos filtros</td></tr>`;
+}
+
+function filtrar(){
+  const q=(document.getElementById('q').value||'').toUpperCase().trim();
+  const fp=document.getElementById('fpel').value, fc=document.getElementById('fcat').value;
+  const fe=document.getElementById('fest').value, fb=document.getElementById('fblo').value;
+  let filas = datosDe(vista).filter(f=>{
+    if(fp && f.pelo!==fp) return false;
+    if(fc && f.categoria!==fc) return false;
+    if(fe && f.estado!==fe) return false;
+    if(fb && f.bloque!==fb) return false;
+    if(q && ![f.rp,f.hba,f.chip,f.padre,f.padre_rp,f.madre,f.madre_rp,f.ternero]
+      .filter(Boolean).join(' ').toUpperCase().includes(q)) return false;
+    return true;
+  });
+  const c=orden.col;
+  filas = [...filas].sort((a,b)=>{
+    let x=a[c], y=b[c];
+    if(x==null&&y==null) return 0;
+    if(x==null) return 1; if(y==null) return -1;
+    const r=(typeof x==='number'&&typeof y==='number')?x-y:String(x).localeCompare(String(y),'es',{numeric:true});
+    return orden.desc?-r:r;
+  });
+  return filas;
+}
+function ordenar(c){ if(orden.col===c) orden.desc=!orden.desc; else {orden.col=c;orden.desc=false;} pintar(); }
+function filtrarEstado(e){
+  if(vista!=='plantel') return;
+  document.getElementById('fest').value = e||'';
+  pintar();
+}
+function verVista(el){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
+  el.classList.add('on'); vista=el.dataset.v;
+  ['q','fpel','fcat','fest','fblo'].forEach(i=>document.getElementById(i).value='');
+  orden={col:'rp',desc:false};
+  llenarFiltros(); pintar();
+}
+
+// ── FICHA ───────────────────────────────────────────────────────────────────
+async function abrirFicha(rp){
+  document.getElementById('ovCard').innerHTML='<div class="cb"><div class="vacio">Cargando…</div></div>';
+  document.getElementById('ov').classList.add('on');
+  let f;
+  try{
+    f = await fetch(`${API}/api/ficha/${encodeURIComponent(rp)}?campo=${encodeURIComponent(campo)}`).then(r=>r.json());
+    if(!f.ok) throw new Error(f.error);
+  }catch(e){
+    document.getElementById('ovCard').innerHTML=`<div class="cb"><div class="vacio">${esc(e.message)}</div></div>`;
+    return;
+  }
+  const O=f.origen;
+  document.getElementById('ovCard').innerHTML=`
+    <div class="ct">
+      <div><h2>${esc(f.rp)}</h2><div class="id">${esc(f.hba||'')}${f.pelo?` · ${esc(f.pelo)}`:''}</div></div>
+      <button onclick="document.getElementById('ov').classList.remove('on')">✕</button>
+    </div>
+    <div class="cb">
+      <div class="fk">
+        <div><span>Edad</span><b>${f.edad_meses!=null?f.edad_meses+' M':'—'}</b></div>
+        <div><span>Peso adulto</span><b>${f.peso_adulto?f.peso_adulto+' KG':'—'}</b></div>
+        <div><span>Partos</span><b>${f.partos}</b></div>
+        <div><span>PN promedio</span><b>${f.pn_prom??'—'}</b></div>
+        <div><span>Destete prom</span><b>${f.destete_prom??'—'}</b></div>
+        <div><span>Eficiencia</span><b class="${f.eficiencia>=55?'bi':f.eficiencia<45?'al':''}">${f.eficiencia?f.eficiencia+'%':'—'}</b></div>
+        <div><span>Interv. partos</span><b>${f.ipp?f.ipp+' D':'—'}</b></div>
+        <div><span>1a preñez</span><b>${f.primera_prenez?f.primera_prenez+' M':'—'}</b></div>
+      </div>
+      <h3 class="s">Origen</h3>
+      <div class="fk" style="margin-bottom:22px">
+        <div><span>Nacimiento</span><b style="font-size:15px">${O.nacimiento||'—'}</b></div>
+        <div><span>Peso al nacer</span><b style="font-size:15px">${O.peso_nacer??'—'}</b></div>
+        <div><span>Padre</span><b style="font-size:15px">${esc(O.padre||'—')}</b></div>
+        <div><span>Madre</span><b style="font-size:15px">${esc(O.madre||'—')}</b></div>
+        <div><span>HBA</span><b style="font-size:15px">${esc(O.hba||'—')}</b></div>
+        <div><span>Caravana</span><b style="font-size:15px">${esc(O.caravana||'—')}</b></div>
+      </div>
+      <h3 class="s">Historial de hijos</h3>
+      <div style="overflow:auto;border:1px solid var(--linea)">
+        <table style="min-width:760px"><thead><tr>
+          <th>Campaña</th><th>Servicio</th><th>Tacto</th><th>Parto</th><th>Bloque</th>
+          <th>Ternero</th><th class="num">P. nacer</th><th class="num">Destete</th><th>Sexo</th>
+        </tr></thead><tbody>
+        ${f.campanas.length? f.campanas.map(c=>`<tr>
+          <td class="mono" style="font-size:12px">${esc(c.campana)}</td>
+          <td class="mut" style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${esc(c.servicio||'—')}</td>
+          <td>${esc(c.tacto_real||String(c.tacto_manga||'').replace(/PREÑADA_?/,'')||'—')}
+            ${c.tacto_corregido?'<span class="corr">corregido</span>':''}</td>
+          <td class="mono" style="font-size:12px">${c.parto||'—'}</td>
+          <td>${tag(c.bloque)}</td><td>${esc(c.ternero||'—')}</td>
+          <td class="num">${c.peso_nac??'—'}</td><td class="num">${c.destete??'—'}</td>
+          <td>${c.sexo||'—'}</td></tr>`).join('')
+        : '<tr><td colspan="9" class="vacio">Sin partos registrados</td></tr>'}
+        </tbody></table></div>
+      ${f.corregidos?`<div style="font-size:12px;color:var(--gris);margin-top:9px">
+        ${f.corregidos} tacto${f.corregidos>1?'s':''} corregido${f.corregidos>1?'s':''} por la fecha de nacimiento.</div>`:''}
+      <h3 class="s" style="margin-top:22px">Notas de campo</h3>
+      <div style="background:#fff;border:1px solid var(--linea)">
+        ${f.notas&&f.notas.length? f.notas.map(n=>`<div style="padding:9px 14px;border-bottom:1px solid var(--linea);font-size:13px">
+          <span class="mono mut" style="font-size:11.5px">${fec(n.fecha)}</span>
+          <span class="${n.grave?'al':''}" style="margin-left:12px">${n.grave?'🔴 ':''}${esc(n.texto)}</span></div>`).join('')
+        : '<div style="padding:14px;color:var(--gris);font-size:13px">Sin notas</div>'}
+      </div>
+      <div class="notaCaja">
+        <input id="fNota" placeholder="Anotar algo de este animal…" onkeydown="if(event.key==='Enter')guardarNota('${esc(f.rp)}')">
+        <button class="btn" onclick="guardarNota('${esc(f.rp)}')">Anotar</button>
+      </div>
+    </div>`;
+}
+async function guardarNota(rp){
+  const el=document.getElementById('fNota'), texto=el.value.trim(); if(!texto) return;
+  try{
+    const r=await fetch(`${API}/api/notas?campo=${encodeURIComponent(campo)}`,{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({rp,texto})}).then(x=>x.json());
+    if(r.error) throw new Error(r.error);
+    if(r.aviso) alert(r.aviso);
+    abrirFicha(rp); cargar();
+  }catch(e){ alert(e.message); }
+}
+
+// ── CHAT ────────────────────────────────────────────────────────────────────
+function msg(quien,texto,pasos){
+  const d=document.createElement('div'); d.className='msg '+quien;
+  d.textContent=texto;
+  if(pasos&&pasos.length){
+    const p=document.createElement('div'); p.className='pasos';
+    p.textContent=pasos.filter(x=>x.tipo==='consulta').length+' consulta(s) a la base'+
+      (pasos.some(x=>x.tipo==='escritura')?' · escribió':'');
+    d.appendChild(p);
+  }
+  const m=document.getElementById('msgs'); m.appendChild(d); m.scrollTop=m.scrollHeight; return d;
+}
+function saludo(){
+  msg('bot','Preguntame lo que quieras del rodeo. Consulto la base antes de responder.');
+  document.getElementById('sug').innerHTML=[
+    '¿cómo viene la parición?',
+    '¿cuál es la vaca más productiva?',
+    '¿hay algo mal cargado?',
+    '¿qué vacas conviene descartar?'
+  ].map(s=>`<button onclick="usar(this)">${s}</button>`).join('');
+}
+function usar(b){ document.getElementById('txt').value=b.textContent; enviar(); }
+async function enviar(){
+  const el=document.getElementById('txt'), t=el.value.trim(); if(!t) return;
+  el.value=''; msg('yo',t); document.getElementById('sug').innerHTML='';
+  const p=msg('bot','consultando la base…'); p.classList.add('pen');
+  try{
+    const r=await fetch(`${API}/api/chat?campo=${encodeURIComponent(campo)}`,{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({mensaje:t, historia:historia.slice(-8)})}).then(x=>x.json());
+    p.remove();
+    const resp = r.respuesta||r.error||'No entendí.';
+    msg('bot', resp, r.pasos);
+    historia.push({role:'user',content:t},{role:'assistant',content:resp});
+    if(r.pasos&&r.pasos.some(x=>x.tipo==='escritura')) setTimeout(cargar,600);
+  }catch(e){ p.remove(); msg('bot','No pude conectar: '+e.message); }
+}
+
+function bajarCsv(){
+  const conf=VISTAS[vista], filas=filtrar();
+  const txt=[conf.cols.map(c=>c.t)].concat(filas.map(f=>conf.cols.map(c=>f[c.k])))
+    .map(r=>r.map(v=>{ if(v==null)v=''; v=String(v);
+      return v.includes(',')||v.includes('"')?`"${v.replace(/"/g,'""')}"`:v; }).join(',')).join('\r\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob(['\ufeff'+txt],{type:'text/csv;charset=utf-8'}));
+  a.download=`${vista}_${new Date().toISOString().slice(0,10)}.csv`; a.click();
+}
+cargar();
+</script>
+</body>
+</html>
