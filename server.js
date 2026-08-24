@@ -343,6 +343,57 @@ app.post("/webhook", async (req, res) => {
   } catch (e) { console.error("webhook:", e.message); }
 });
 
+
+// ── TRAER LA BASE DESDE OTRO SERVIDOR ────────────────────────────────────────
+// Railway no comparte volúmenes entre servicios. En vez de bajar el archivo a
+// mano y volver a subirlo, este servidor se lo pide al viejo y lo guarda.
+// Es para la puesta en marcha: una vez copiada la base, no se usa más.
+app.post("/api/importar-base", async (req, res) => {
+  const { url, campo, clave } = req.body;
+  if (!url) return res.status(400).json({ error: "Falta la url del servidor viejo" });
+  const destino = path.join(DB_DIR, `${campo || CAMPO_DEFAULT}.db`);
+
+  try {
+    if (fs.existsSync(destino) && !req.body.pisar) {
+      const kb = Math.round(fs.statSync(destino).size / 1024);
+      return res.status(409).json({
+        error: `Ya hay una base en ${destino} de ${kb} KB. Mandá "pisar": true si querés reemplazarla.` });
+    }
+    const r = await fetch(url + (url.includes("?") ? "&" : "?") + `clave=${encodeURIComponent(clave || "")}`);
+    if (!r.ok) return res.status(502).json({ error: `El servidor viejo respondió ${r.status}` });
+
+    const buf = Buffer.from(await r.arrayBuffer());
+    // Un SQLite empieza siempre con esta firma: si no está, bajó otra cosa.
+    if (buf.slice(0, 15).toString() !== "SQLite format 3")
+      return res.status(400).json({ error: "Lo que llegó no es una base SQLite. Revisá la url y la clave." });
+
+    if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
+    fs.writeFileSync(destino, buf);
+    // Se cierra la conexión vieja para que la próxima abra el archivo nuevo.
+    const k = campo || CAMPO_DEFAULT;
+    if (bases[k]) { try { bases[k].close(); } catch (e) {} delete bases[k]; }
+
+    const db = getDB(k);
+    const animales = db.prepare("SELECT COUNT(*) n FROM animales").get().n;
+    const vientres = plantelMod.plantel(db).filas.length;
+    res.json({ ok: true, archivo: destino, kb: Math.round(buf.length / 1024), animales, vientres,
+      mensaje: `Listo: ${animales} animales, ${vientres} vientres.` });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Qué hay en el volumen.
+app.get("/api/volumen", (req, res) => {
+  try {
+    if (!fs.existsSync(DB_DIR)) return res.json({ dir: DB_DIR, existe: false, archivos: [] });
+    res.json({ dir: DB_DIR, existe: true, archivos: fs.readdirSync(DB_DIR).map(f => {
+      const st = fs.statSync(path.join(DB_DIR, f));
+      return { archivo: f, kb: Math.round(st.size / 1024), modificado: st.mtime };
+    })});
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get("/api/salud", (req, res) => {
   const out = { version: VERSION, campos: {} };
   for (const k of Object.keys(CAMPOS)) {
@@ -359,7 +410,25 @@ app.get("/api/salud", (req, res) => {
 });
 
 app.use(express.static(path.join(__dirname, "public")));
-app.get("/", (req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
+app.get("/", (req, res) => {
+  const html = path.join(__dirname, "public", "index.html");
+  if (fs.existsSync(html)) return res.sendFile(html);
+  // Sin el tablero el sistema igual funciona: se avisa qué falta.
+  res.type("html").send(`<!DOCTYPE html><html lang="es"><meta charset="utf-8">
+    <title>RODEO</title>
+    <body style="font-family:system-ui;max-width:640px;margin:60px auto;padding:0 20px;line-height:1.6;color:#10243f">
+    <h1 style="letter-spacing:2px">RODEO ${VERSION}</h1>
+    <p>El servidor está andando, pero falta el tablero.</p>
+    <p>Subí el archivo <b>index.html</b> dentro de una carpeta <b>public</b> en el repo.
+       En GitHub, al subirlo escribí el nombre como <code>public/index.html</code> — la barra
+       crea la carpeta sola.</p>
+    <p>Mientras tanto, el sistema responde por acá:</p>
+    <ul>
+      <li><a href="/api/salud">/api/salud</a> — qué ve el sistema</li>
+      <li><a href="/api/plantel">/api/plantel</a> — los vientres</li>
+      <li><a href="/api/animales">/api/animales</a> — todos los animales</li>
+    </ul></body></html>`);
+});
 
 app.listen(PORT, () => {
   console.log(`${VERSION} en el puerto ${PORT}`);

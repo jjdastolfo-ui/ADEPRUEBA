@@ -46,7 +46,7 @@ function calendario(db) {
   const servicios = q(`
     SELECT temporada,
            MIN(COALESCE(fecha_iatf, fecha_ingreso_toro)) desde,
-           MAX(COALESCE(fecha_salida_toro, fecha_ingreso_toro, fecha_iatf)) hasta,
+           MAX(COALESCE(fecha_ingreso_toro, fecha_iatf)) hasta,
            COUNT(*) n
     FROM servicios WHERE temporada IS NOT NULL AND temporada <> ''
     GROUP BY temporada ORDER BY temporada DESC LIMIT 6`);
@@ -56,18 +56,27 @@ function calendario(db) {
     FROM animales WHERE fecha_nac IS NOT NULL AND COALESCE(madre_rp,'') <> ''
     GROUP BY anio ORDER BY anio DESC LIMIT 6`);
 
-  // Los cortes de bloque salen de la parición real, no de meses fijos. Si el
-  // grueso pare en agosto, ese es el bloque cabeza de este campo.
+  // Los cortes de bloque salen de cuándo DEBERÍA parir el rodeo, que es la fecha
+  // probable de parto del servicio. Tomar el primer nacimiento del año no sirve:
+  // un parto suelto en marzo correría todos los bloques ocho meses.
   let cortes = null;
-  const ult = pariciones[0];
-  if (ult && ult.primero) {
-    const inicio = ult.primero;
-    cortes = {
-      referencia: inicio,
-      CABEZA: sumar(inicio, 20),
-      CUERPO: sumar(inicio, 40),
-      COLA:   sumar(inicio, 60)
-    };
+  const serv = servicios[0];
+  if (serv && serv.desde) {
+    const fpp = sumar(serv.desde, GESTACION);
+    cortes = { referencia: fpp, origen: `FPP del servicio ${serv.temporada}`,
+      CABEZA: sumar(fpp, 20), CUERPO: sumar(fpp, 40), COLA: sumar(fpp, 60) };
+  } else {
+    // Sin servicios cargados, se busca dónde se concentra la parición: el mes
+    // con más nacimientos, no el primero que aparece.
+    const meses = q(`
+      SELECT substr(fecha_nac,1,7) mes, COUNT(*) n FROM animales
+      WHERE fecha_nac IS NOT NULL AND COALESCE(madre_rp,'') <> ''
+      GROUP BY mes ORDER BY n DESC LIMIT 1`);
+    if (meses[0]) {
+      const inicio = meses[0].mes + "-01";
+      cortes = { referencia: inicio, origen: `mes con más partos (${meses[0].mes})`,
+        CABEZA: sumar(inicio, 20), CUERPO: sumar(inicio, 40), COLA: sumar(inicio, 60) };
+    }
   }
 
   return { servicios, pariciones, cortes };
@@ -76,7 +85,7 @@ function calendario(db) {
 function bloqueDe(fecha, cortes) {
   if (!fecha) return null;
   if (cortes && cortes.referencia) {
-    if (fecha <= cortes.CABEZA) return "CABEZA";
+    if (fecha <= cortes.CABEZA) return "CABEZA";   // incluye los adelantados
     if (fecha <= cortes.CUERPO) return "CUERPO";
     if (fecha <= cortes.COLA)   return "COLA";
     return "TARDIA";
