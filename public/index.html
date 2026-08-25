@@ -133,6 +133,7 @@ h3.s{font-size:12.5px;letter-spacing:2px;text-transform:uppercase;color:var(--az
       <button class="tab" data-v="nac" onclick="verVista(this)">Nacimientos</button>
       <button class="tab" data-v="recria" onclick="verVista(this)">Recría</button>
       <button class="tab" data-v="term" onclick="verVista(this)">Terminación</button>
+      <button class="tab" data-v="dest" onclick="verVista(this)">Destinos</button>
       <button class="tab" data-v="fallos" onclick="verVista(this)">No destetaron</button>
     </div>
   </header>
@@ -240,6 +241,20 @@ const VISTAS = {
     {k:'gdp',t:'GDP',num:1,fmt:v=>v==null?'—':`<span class="${v>=1.2?'bi':v<0.8?'al':''}">${v}</span>`},
     {k:'ultima_pesada',t:'Última pesada',cls:'mut',fmt:(v,f)=>v?fec(v)+(f.dias_sin_pesar>30?` <span class="al">+${f.dias_sin_pesar}d</span>`:''):'—'}
   ]},
+  dest: { titulo:'Destinos', cols:[
+    {k:'rp',t:'RP',cls:'rp'},
+    {k:'destino',t:'Destino',fmt:(v,f)=>`<span class="tag ${f.positivo===true?'t-destetó':f.positivo===false?'t-falló':'t-preñada'}">${esc(v)}</span>`},
+    {k:'motivo_texto',t:'Motivo',cls:'mut'},
+    {k:'categoria',t:'Categoría',cls:'mut'},
+    {k:'edad_meses',t:'Edad (m)',num:1},
+    {k:'peso_adulto',t:'Peso',num:1},
+    {k:'partos',t:'Partos',num:1},
+    {k:'destete_prom',t:'Destete prom',num:1},
+    {k:'eficiencia',t:'Efic. %',num:1,fmt:v=>v==null?'—':v+'%'},
+    {k:'fecha',t:'Decidido',cls:'mut',fmt:v=>fec(v)||'—'},
+    {k:'concretado',t:'Salió',fmt:(v,f)=>v?`<span class="bi">${fec(f.fecha_salida)||'sí'}</span>`:'<span class="mut">pendiente</span>'},
+    {k:'nota',t:'Nota',cls:'mut'}
+  ]},
   fallos: { titulo:'No destetaron', cols:[
     {k:'rp',t:'RP',cls:'rp'},
     {k:'causa_texto',t:'Motivo',fmt:v=>`<span class="al">${esc(v||'—')}</span>`},
@@ -264,14 +279,16 @@ async function cargar(){
 
   const url = q => `${API}${q}${q.includes('?')?'&':'?'}campo=${encodeURIComponent(campo)}`;
   try{
-    const [pl, an, te] = await Promise.all([
+    const [pl, an, te, de] = await Promise.all([
       fetch(url('/api/plantel')).then(r=>r.json()),
       fetch(url('/api/animales')).then(r=>r.json()),
-      fetch(url('/api/terminacion')).then(r=>r.json()).catch(()=>null)
+      fetch(url('/api/terminacion')).then(r=>r.json()).catch(()=>null),
+      fetch(url('/api/destinos')).then(r=>r.json()).catch(()=>null)
     ]);
     if(pl.error) throw new Error(pl.error);
     D = { plantel: pl, animales: Array.isArray(an)?an:[],
-          terminacion: (te && !te.error) ? te : { filas:[], resumen:{} } };
+          terminacion: (te && !te.error) ? te : { filas:[], resumen:{} },
+          destinos: (de && !de.error) ? de : { filas:[], candidatos:[], resumen:{} } };
     document.getElementById('hSub').textContent =
       `${pl.filas.length} vientres · parición ${pl.anio_paricion} · ${D.animales.length} animales`;
     llenarFiltros(); pintar(); saludo();
@@ -302,6 +319,7 @@ function datosDe(v){
   if(v==='fallos') return D.plantel.filas.filter(f=>f.estado==='FALLÓ');
   const anio = D.plantel.anio_paricion;
   if(v==='term') return D.terminacion.filas;
+  if(v==='dest') return D.destinos.filas;
   if(v==='nac') return D.animales.filter(a=>String(a.fecha_nac||'').startsWith(anio));
   if(v==='recria'){
     const hoy=new Date();
@@ -341,12 +359,27 @@ function pintar(){
       [T.kg_totales||'—','Kg totales','oro',''],
       [T.sin_pesar||0,'Sin pesar +30d',T.sin_pesar?'al':'','']
     ]; })()
+    : vista==='dest' ? (()=>{ const T=D.destinos.resumen; const pd=T.por_destino||{}; return [
+        [T.marcados||0,'Marcados','',''],
+        [T.pendientes||0,'Sin salir','',''],
+        [T.concretados||0,'Ya salieron','bien',''],
+        [pd['TORO REPRODUCTOR']||0,'Reproductores','bien',''],
+        [pd['TERMINACION']||0,'A terminación','',''],
+        [pd['VENTA PREÑADA']||0,'Venta preñada','',''],
+        [T.candidatos||0,'Candidatos sin marcar', T.candidatos?'al':'','']
+      ]; })()
     : [[filas.length, conf.titulo,'','']];
   document.getElementById('kpis').innerHTML = kp.map(([n,t,c,f])=>
     `<div class="kpi ${c||''}" onclick="filtrarEstado('${f||''}')"><b>${n}</b><span>${t}</span></div>`).join('');
 
-  document.getElementById('avisos').innerHTML = (vista==='plantel' && R.avisos && R.avisos.length)
-    ? R.avisos.map(a=>`<div class="aviso"><b>${a.n}</b> ${esc(a.texto)}</div>`).join('') : '';
+  document.getElementById('avisos').innerHTML =
+    (vista==='plantel' && R.avisos && R.avisos.length)
+      ? R.avisos.map(a=>`<div class="aviso"><b>${a.n}</b> ${esc(a.texto)}</div>`).join('')
+    : (vista==='dest' && D.destinos.candidatos && D.destinos.candidatos.length)
+      ? `<div class="aviso"><b>${D.destinos.candidatos.length}</b> sin destino marcado:
+         ${D.destinos.candidatos.slice(0,10).map(c=>esc(c.rp)).join(', ')}${
+         D.destinos.candidatos.length>10?` y ${D.destinos.candidatos.length-10} más`:''}
+         — pedile al chat que los marque</div>` : '';
 
   document.getElementById('thead').innerHTML = conf.cols.map(c=>
     `<th class="${c.num?'num':''}" onclick="ordenar('${c.k}')">${c.t}${
