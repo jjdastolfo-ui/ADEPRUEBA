@@ -89,6 +89,18 @@ function crearTablas(db) {
     CREATE INDEX IF NOT EXISTS idx_ser_an ON servicios(animal_id);
     CREATE INDEX IF NOT EXISTS idx_med_an ON mediciones(animal_id);
     CREATE INDEX IF NOT EXISTS idx_ani_madre ON animales(madre_rp);
+
+    -- Los tableros que arma el bot. Cada uno vive aparte: si uno sale roto,
+    -- no afecta al tablero principal ni a los demás.
+    CREATE TABLE IF NOT EXISTS tableros (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug TEXT NOT NULL UNIQUE,
+      titulo TEXT NOT NULL,
+      pedido TEXT,
+      html TEXT NOT NULL,
+      creado_por TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')));
   `);
 }
 
@@ -137,6 +149,24 @@ const HERRAMIENTAS = [
         que: { type: "string", description: "Qué estás cambiando, en una línea." }
       },
       required: ["sql", "que"]
+    }
+  },
+  {
+    name: "crear_tablero",
+    description: "Arma una página web propia y la publica en una URL del sistema. Usalo cuando " +
+      "te pidan un tablero, un informe visual, una tabla que se pueda mirar, o cualquier cosa " +
+      "que se vea mejor en pantalla que en texto. Antes de armarlo consultá los datos que va " +
+      "a mostrar, así el HTML sale con los números reales adentro.",
+    input_schema: {
+      type: "object",
+      properties: {
+        slug: { type: "string", description: "Nombre corto para la URL, sin espacios ni acentos. Ej: 'toros-2026'." },
+        titulo: { type: "string", description: "Título que se ve arriba." },
+        html: { type: "string", description:
+          "El HTML completo, desde <!DOCTYPE html>. Todo adentro: estilos, datos y scripts. " +
+          "Podés pedir datos frescos a /api/plantel?campo=CAMPO y /api/animales?campo=CAMPO." }
+      },
+      required: ["slug", "titulo", "html"]
     }
   }
 ];
@@ -197,10 +227,29 @@ CÓMO TRABAJAR:
 · Consultá primero, respondé después. Cruzá datos si hace falta.
 · Decí lo que concluís y en qué te basás, con las fechas en la mano.
 · Si los datos no alcanzan para responder, decilo. No inventes.
-· Si encontrás algo que está mal cargado — una fecha imposible, una vaca con dos crías el
-  mismo año, un peso que no cierra con su historia — avisalo aunque no te lo hayan preguntado.
+· Si encontrás algo que está mal cargado, avisalo aunque no te lo hayan preguntado. Lo típico:
+  una madre que era más joven que su cría, una vaca con dos crías el mismo año, una fecha de
+  nacimiento imposible (1970 suele ser un campo vacío), un peso que no cierra con su historia,
+  o un RP que se repite entre animales distintos.
 · Cuando te pidan cargar o corregir algo, verificá primero que exista y tenga sentido, después
   escribí, y contá qué hiciste.
+
+ARMAR TABLEROS: si te piden un tablero, un informe visual o una tabla para mirar, usá la herramienta crear_tablero.
+Consultá los datos primero y metelos dentro del HTML, así la página abre con los números ya puestos.
+Escribí una página completa desde <!DOCTYPE html>: estilos adentro, sin librerías externas.
+Usá la misma estética del sistema — fondo #F7F3EC, azul #0B3D7C, dorado #C9A24B, tipografía Oswald
+desde Google Fonts, encabezados en mayúscula con espaciado. Tablas densas, números a la derecha.
+Si querés que se actualice sola, pedí los datos a /api/plantel?campo=__CAMPO__ — reemplazo
+__CAMPO__ por el campo actual.
+Después de crearlo, decile al usuario en qué URL quedó.
+
+CUANDO TE CORRIGEN: si te dicen que un dato está mal — "la 23 no tiene ternero", "esa vaca no existe",
+"el RP correcto es otro" — no es una pregunta: es una corrección. Verificá qué hay cargado, mostrale
+lo que encontraste, y proponé el cambio concreto antes de hacerlo. Si hay dos animales con el mismo RP,
+decilo claro y preguntá cuál es cuál.
+
+NO TE QUEDES INVESTIGANDO: consultá lo necesario y respondé. Si después de unas consultas no llegás a
+una conclusión, contá qué encontraste y qué te falta. Es mejor una respuesta parcial que ninguna.
 
 CÓMO HABLAR: como un asesor que conoce el campo. Frases cortas, sin listas de más, sin repetir
 la pregunta. Números concretos. Si algo es una estimación, decilo.`;
@@ -210,12 +259,18 @@ async function conversar(db, campoNombre, mensajes, opciones = {}) {
   const pasos = [];
   let historia = [...mensajes];
 
-  for (let vuelta = 0; vuelta < 8; vuelta++) {
+  const MAX = 14;
+  for (let vuelta = 0; vuelta < MAX; vuelta++) {
+    // En la última vuelta se le sacan las herramientas: así se ve obligado a
+    // responder con lo que ya averiguó en vez de seguir consultando.
+    const ultima = vuelta === MAX - 1;
     const r = await anthropic.messages.create({
       model: MODELO,
       max_tokens: 2000,
-      system: instrucciones(db, campoNombre),
-      tools: HERRAMIENTAS,
+      system: instrucciones(db, campoNombre) + (ultima
+        ? "\n\nSE TE ACABÓ EL TIEMPO DE CONSULTAR. Respondé ahora con lo que averiguaste. Si te falta algo, decí qué encontraste y qué te falta."
+        : ""),
+      ...(ultima ? {} : { tools: HERRAMIENTAS }),
       messages: historia
     });
 
@@ -233,6 +288,10 @@ async function conversar(db, campoNombre, mensajes, opciones = {}) {
         if (u.name === "consultar") {
           out = correrConsulta(db, u.input.sql);
           pasos.push({ tipo: "consulta", sql: u.input.sql, porque: u.input.porque, filas: out.total });
+        } else if (u.name === "crear_tablero") {
+          if (opciones.soloLectura) throw new Error("Esta sesión es de sólo lectura");
+          out = guardarTablero(db, u.input, opciones.campoKey);
+          pasos.push({ tipo: "tablero", slug: out.slug, url: out.url });
         } else if (u.name === "escribir") {
           if (opciones.soloLectura) throw new Error("Esta sesión es de sólo lectura");
           out = correrEscritura(db, u.input.sql, u.input.params);
@@ -246,8 +305,66 @@ async function conversar(db, campoNombre, mensajes, opciones = {}) {
     }
     historia.push({ role: "user", content: resultados });
   }
-  return { respuesta: "Me quedé dando vueltas sin llegar a una respuesta. Probá preguntándomelo de otra forma.", pasos };
+  // No debería llegar acá, pero si pasa se cuenta qué se averiguó en vez de
+  // dejar al usuario sin nada.
+  const consultas = pasos.filter(p => p.tipo === "consulta");
+  return {
+    respuesta: `Revisé la base ${consultas.length} veces pero no llegué a una conclusión. ` +
+      `Estuve mirando: ${consultas.slice(0, 4).map(c => c.porque || "datos").join("; ")}. ` +
+      `Probá siendo más específico — por ejemplo, nombrando el RP o la temporada.`,
+    pasos };
 }
+
+// ── TABLEROS QUE ARMA EL BOT ─────────────────────────────────────────────────
+
+function guardarTablero(db, t, campoKey) {
+  const slug = String(t.slug || "").toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  if (!slug) throw new Error("El nombre para la url no sirve");
+  let html = String(t.html || "");
+  if (!/<html/i.test(html)) throw new Error("El HTML tiene que ser una página completa");
+
+  // El tablero necesita saber a qué campo pedirle los datos.
+  if (campoKey) html = html.replace(/CAMPO_AQUI|__CAMPO__/g, campoKey);
+
+  db.prepare(`INSERT INTO tableros (slug,titulo,pedido,html,creado_por) VALUES (?,?,?,?,?)
+    ON CONFLICT(slug) DO UPDATE SET titulo=excluded.titulo, html=excluded.html,
+      pedido=excluded.pedido, updated_at=datetime('now')`)
+    .run(slug, t.titulo || slug, t.pedido || null, html, t.creado_por || null);
+
+  return { ok: true, slug, url: `/t/${slug}`,
+    mensaje: `Quedó en /t/${slug}` };
+}
+
+// Un tablero armado por el bot.
+app.get("/t/:slug", (req, res) => {
+  const db = getDB(req.query.campo || CAMPO_DEFAULT);
+  try {
+    const t = db.prepare("SELECT html FROM tableros WHERE slug=?").get(req.params.slug);
+    if (!t) return res.status(404).type("html").send(
+      `<body style="font-family:system-ui;padding:60px;text-align:center;color:#666">
+       <h2>No existe ese tablero</h2><p><a href="/">Volver</a></p></body>`);
+    res.type("html").send(t.html);
+  } catch (e) { res.status(500).send(e.message); }
+});
+
+app.get("/api/tableros", (req, res) => {
+  const db = getDB(req.query.campo || CAMPO_DEFAULT);
+  try {
+    res.json(db.prepare(`SELECT slug,titulo,pedido,created_at,updated_at
+      FROM tableros ORDER BY updated_at DESC`).all()
+      .map(t => ({ ...t, url: `/t/${t.slug}` })));
+  } catch (e) { res.json([]); }
+});
+
+app.delete("/api/tableros/:slug", (req, res) => {
+  const db = getDB(req.query.campo || CAMPO_DEFAULT);
+  try {
+    const r = db.prepare("DELETE FROM tableros WHERE slug=?").run(req.params.slug);
+    res.json({ ok: !!r.changes });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // ── API ──────────────────────────────────────────────────────────────────────
 
@@ -320,7 +437,8 @@ app.post("/api/chat", async (req, res) => {
   const nombre = (CAMPOS[campoKey] || {}).nombre || "el campo";
   try {
     const msgs = [...(Array.isArray(historia) ? historia : []), { role: "user", content: mensaje }];
-    const r = await conversar(db, nombre, msgs, { soloLectura: req.body.solo_lectura });
+    const r = await conversar(db, nombre, msgs, {
+      soloLectura: req.body.solo_lectura, campoKey });
     res.json(r);
   } catch (e) {
     res.status(500).json({ error: e.message, respuesta: `No pude procesarlo: ${e.message}` });
