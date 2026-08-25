@@ -132,6 +132,7 @@ h3.s{font-size:12.5px;letter-spacing:2px;text-transform:uppercase;color:var(--az
       <button class="tab on" data-v="plantel" onclick="verVista(this)">Plantel</button>
       <button class="tab" data-v="nac" onclick="verVista(this)">Nacimientos</button>
       <button class="tab" data-v="recria" onclick="verVista(this)">Recría</button>
+      <button class="tab" data-v="term" onclick="verVista(this)">Terminación</button>
       <button class="tab" data-v="fallos" onclick="verVista(this)">No destetaron</button>
     </div>
   </header>
@@ -225,6 +226,20 @@ const VISTAS = {
     {k:'ultima_pesada',t:'Última pesada',cls:'mut',fmt:v=>fec(v)||'—'},
     {k:'categoria',t:'Categoría',cls:'mut'}
   ]},
+  term: { titulo:'Terminación', cols:[
+    {k:'rp',t:'RP',cls:'rp'},
+    {k:'lote',t:'Lote',cls:'mut'},
+    {k:'potrero',t:'Potrero',cls:'mut'},
+    {k:'categoria',t:'Categoría',cls:'mut'},
+    {k:'meses',t:'Edad (m)',num:1},
+    {k:'fecha_ingreso',t:'Ingresó',cls:'mut',fmt:v=>fec(v)||'—'},
+    {k:'dias_corral',t:'Días',num:1},
+    {k:'peso_entrada',t:'P. entrada',num:1},
+    {k:'peso_actual',t:'Peso',num:1,fmt:v=>v==null?'—':`<b>${v}</b>`},
+    {k:'ganancia',t:'Ganó',num:1,fmt:v=>v==null?'—':`<span class="${v>0?'bi':'al'}">${v>0?'+':''}${v}</span>`},
+    {k:'gdp',t:'GDP',num:1,fmt:v=>v==null?'—':`<span class="${v>=1.2?'bi':v<0.8?'al':''}">${v}</span>`},
+    {k:'ultima_pesada',t:'Última pesada',cls:'mut',fmt:(v,f)=>v?fec(v)+(f.dias_sin_pesar>30?` <span class="al">+${f.dias_sin_pesar}d</span>`:''):'—'}
+  ]},
   fallos: { titulo:'No destetaron', cols:[
     {k:'rp',t:'RP',cls:'rp'},
     {k:'causa_texto',t:'Motivo',fmt:v=>`<span class="al">${esc(v||'—')}</span>`},
@@ -249,12 +264,14 @@ async function cargar(){
 
   const url = q => `${API}${q}${q.includes('?')?'&':'?'}campo=${encodeURIComponent(campo)}`;
   try{
-    const [pl, an] = await Promise.all([
+    const [pl, an, te] = await Promise.all([
       fetch(url('/api/plantel')).then(r=>r.json()),
-      fetch(url('/api/animales')).then(r=>r.json())
+      fetch(url('/api/animales')).then(r=>r.json()),
+      fetch(url('/api/terminacion')).then(r=>r.json()).catch(()=>null)
     ]);
     if(pl.error) throw new Error(pl.error);
-    D = { plantel: pl, animales: Array.isArray(an)?an:[] };
+    D = { plantel: pl, animales: Array.isArray(an)?an:[],
+          terminacion: (te && !te.error) ? te : { filas:[], resumen:{} } };
     document.getElementById('hSub').textContent =
       `${pl.filas.length} vientres · parición ${pl.anio_paricion} · ${D.animales.length} animales`;
     llenarFiltros(); pintar(); saludo();
@@ -284,6 +301,7 @@ function datosDe(v){
   if(v==='plantel') return D.plantel.filas;
   if(v==='fallos') return D.plantel.filas.filter(f=>f.estado==='FALLÓ');
   const anio = D.plantel.anio_paricion;
+  if(v==='term') return D.terminacion.filas;
   if(v==='nac') return D.animales.filter(a=>String(a.fecha_nac||'').startsWith(anio));
   if(v==='recria'){
     const hoy=new Date();
@@ -314,7 +332,16 @@ function pintar(){
     [R.destete_prom||'—','Destete prom','',''],
     [R.eficiencia_prom!=null?R.eficiencia_prom+'%':'—','Eficiencia','oro',''],
     [R.ipp_prom||'—','Int. partos','','']
-  ] : [[filas.length, conf.titulo,'','']];
+  ] : vista==='term' ? (()=>{ const T=D.terminacion.resumen; return [
+      [T.total||0,'En corral','',''],
+      [T.peso_prom||'—','Peso prom kg','',''],
+      [T.gdp_prom||'—','GDP promedio',T.gdp_prom>=1.1?'bien':T.gdp_prom<0.8?'al':'',''],
+      [T.ganancia_prom!=null?'+'+T.ganancia_prom:'—','Ganó prom kg','bien',''],
+      [T.dias_prom||'—','Días en corral','',''],
+      [T.kg_totales||'—','Kg totales','oro',''],
+      [T.sin_pesar||0,'Sin pesar +30d',T.sin_pesar?'al':'','']
+    ]; })()
+    : [[filas.length, conf.titulo,'','']];
   document.getElementById('kpis').innerHTML = kp.map(([n,t,c,f])=>
     `<div class="kpi ${c||''}" onclick="filtrarEstado('${f||''}')"><b>${n}</b><span>${t}</span></div>`).join('');
 
