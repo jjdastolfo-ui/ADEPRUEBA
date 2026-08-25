@@ -409,6 +409,92 @@ app.get("/api/animales", (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+
+// Los lotes con sus animales. La terminación se define por lote, no por
+// categoría: un toro en el corral está terminando, el mismo en el potrero no.
+app.get("/api/lotes", (req, res) => {
+  const db = dbDe(req);
+  try {
+    const lotes = db.prepare(`
+      SELECT l.id, l.nombre, l.potrero, l.descripcion,
+             COUNT(la.animal_id) animales
+      FROM lotes l LEFT JOIN lote_animales la ON la.lote_id = l.id
+      GROUP BY l.id ORDER BY animales DESC`).all();
+    res.json(lotes);
+  } catch (e) { res.json([]); }
+});
+
+app.get("/api/lote/:id/animales", (req, res) => {
+  const db = dbDe(req);
+  try {
+    res.json(db.prepare(`
+      SELECT a.*, la.fecha_ingreso,
+        (SELECT peso FROM pesadas p WHERE p.animal_id=a.id ORDER BY p.fecha DESC LIMIT 1) peso_actual,
+        (SELECT fecha FROM pesadas p WHERE p.animal_id=a.id ORDER BY p.fecha DESC LIMIT 1) ultima_pesada,
+        (SELECT peso FROM pesadas p WHERE p.animal_id=a.id AND upper(COALESCE(p.contexto,''))='DESTETE'
+         ORDER BY p.fecha DESC LIMIT 1) destete
+      FROM lote_animales la JOIN animales a ON a.id = la.animal_id
+      WHERE la.lote_id = ? ORDER BY a.rp`).all(req.params.id));
+  } catch (e) { res.json([]); }
+});
+
+// Todo lo que está en corral, con cuánto viene ganando cada uno.
+app.get("/api/terminacion", (req, res) => {
+  const db = dbDe(req);
+  const hoy = new Date().toISOString().slice(0, 10);
+  try {
+    const filas = db.prepare(`
+      SELECT a.id, a.rp, a.sexo, a.categoria, a.fecha_nac, a.pelo, a.padre_rp,
+             l.nombre lote, l.potrero, la.fecha_ingreso
+      FROM lote_animales la
+      JOIN lotes l ON l.id = la.lote_id
+      JOIN animales a ON a.id = la.animal_id
+      WHERE upper(l.nombre) LIKE '%TERMINACION%' OR upper(l.nombre) LIKE '%CORRAL%'
+         OR upper(COALESCE(l.potrero,'')) LIKE '%CORRAL%'
+      ORDER BY a.rp`).all();
+
+    const dias = (a, b) => (a && b) ? Math.round((new Date(b) - new Date(a)) / 86400000) : null;
+    const out = filas.map(f => {
+      const pes = db.prepare(`SELECT fecha,peso FROM pesadas WHERE animal_id=? ORDER BY fecha`).all(f.id);
+      const ult = pes[pes.length - 1] || null;
+      // Peso al entrar al corral: la pesada más cercana al ingreso.
+      const entrada = f.fecha_ingreso
+        ? pes.filter(p => p.fecha <= f.fecha_ingreso).pop() || pes[0] : pes[0];
+      const d = (entrada && ult && entrada.fecha !== ult.fecha) ? dias(entrada.fecha, ult.fecha) : null;
+      const gdp = (d && d > 0) ? Math.round(((ult.peso - entrada.peso) / d) * 1000) / 1000 : null;
+      return {
+        rp: f.rp, sexo: f.sexo, categoria: f.categoria, pelo: f.pelo, padre_rp: f.padre_rp,
+        lote: f.lote, potrero: f.potrero, fecha_ingreso: f.fecha_ingreso,
+        meses: f.fecha_nac ? Math.round(dias(f.fecha_nac, hoy) / 30.44) : null,
+        peso_entrada: entrada ? entrada.peso : null,
+        peso_actual: ult ? ult.peso : null,
+        ultima_pesada: ult ? ult.fecha : null,
+        dias_corral: f.fecha_ingreso ? dias(f.fecha_ingreso, hoy) : null,
+        ganancia: (entrada && ult) ? Math.round((ult.peso - entrada.peso) * 10) / 10 : null,
+        gdp, destete: f.destete,
+        dias_sin_pesar: ult ? dias(ult.fecha, hoy) : null
+      };
+    });
+
+    const num = a => a.filter(x => x != null && isFinite(x));
+    const prom = a => a.length ? Math.round((a.reduce((x, y) => x + y, 0) / a.length) * 10) / 10 : null;
+    const gdps = num(out.map(f => f.gdp));
+    res.json({
+      filas: out,
+      resumen: {
+        total: out.length,
+        lotes: [...new Set(out.map(f => f.lote))],
+        peso_prom: prom(num(out.map(f => f.peso_actual))),
+        gdp_prom: gdps.length ? Math.round(prom(gdps) * 1000) / 1000 : null,
+        ganancia_prom: prom(num(out.map(f => f.ganancia))),
+        dias_prom: prom(num(out.map(f => f.dias_corral))),
+        kg_totales: Math.round(num(out.map(f => f.peso_actual)).reduce((a, b) => a + b, 0)),
+        sin_pesar: out.filter(f => f.dias_sin_pesar > 30).length
+      }
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post("/api/notas", (req, res) => {
   const { rp, texto } = req.body;
   if (!rp || !texto) return res.status(400).json({ error: "Falta el RP o el texto" });
