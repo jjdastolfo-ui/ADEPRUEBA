@@ -36,6 +36,7 @@ const MODELO = process.env.MODELO || "claude-sonnet-4-6";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const plantelMod = require("./plantel.js");
+let destinosMod; try { destinosMod = require("./destinos.js"); } catch (e) { console.log("destinos.js no disponible:", e.message); }
 
 // ── CAMPOS ───────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,7 @@ function getDB(key) {
   db.pragma("journal_mode = WAL");
   crearTablas(db);
   plantelMod.init(db);
+  if (destinosMod) { try { destinosMod.init(db); } catch (e) {} }
   bases[k] = db;
   return db;
 }
@@ -162,11 +164,15 @@ const HERRAMIENTAS = [
       properties: {
         slug: { type: "string", description: "Nombre corto para la URL, sin espacios ni acentos. Ej: 'toros-2026'." },
         titulo: { type: "string", description: "Título que se ve arriba." },
-        html: { type: "string", description:
-          "El HTML completo, desde <!DOCTYPE html>. Todo adentro: estilos, datos y scripts. " +
-          "Podés pedir datos frescos a /api/plantel?campo=CAMPO y /api/animales?campo=CAMPO." }
+        contenido: { type: "string", description:
+          "Sólo el contenido: tablas, párrafos, tarjetas de números. NO pongas <html>, <head>, " +
+          "<style> ni <body> — de eso se encarga el sistema, que ya tiene la estética armada. " +
+          "Usá <table> para las tablas, <h2> para los títulos de sección, y para los números " +
+          "de arriba <div class='kpis'><div class='kpi'><b>42</b><span>VIENTRES</span></div></div>. " +
+          "Poné los datos ya calculados adentro, no scripts." },
+        subtitulo: { type: "string", description: "Una línea que aclare qué muestra. Opcional." }
       },
-      required: ["slug", "titulo", "html"]
+      required: ["slug", "titulo", "contenido"]
     }
   }
 ];
@@ -234,14 +240,28 @@ CÓMO TRABAJAR:
 · Cuando te pidan cargar o corregir algo, verificá primero que exista y tenga sentido, después
   escribí, y contá qué hiciste.
 
-ARMAR TABLEROS: si te piden un tablero, un informe visual o una tabla para mirar, usá la herramienta crear_tablero.
-Consultá los datos primero y metelos dentro del HTML, así la página abre con los números ya puestos.
-Escribí una página completa desde <!DOCTYPE html>: estilos adentro, sin librerías externas.
-Usá la misma estética del sistema — fondo #F7F3EC, azul #0B3D7C, dorado #C9A24B, tipografía Oswald
-desde Google Fonts, encabezados en mayúscula con espaciado. Tablas densas, números a la derecha.
-Si querés que se actualice sola, pedí los datos a /api/plantel?campo=__CAMPO__ — reemplazo
-__CAMPO__ por el campo actual.
-Después de crearlo, decile al usuario en qué URL quedó.
+ARMAR TABLEROS: si te piden un tablero, un informe visual o una tabla para mirar, usá crear_tablero.
+Consultá los datos primero y ponelos ya calculados adentro.
+
+NO escribas la página entera: mandá sólo el contenido. Los estilos y el encabezado los pone el
+sistema. Usá <table> con <thead>/<tbody>, <h2> para separar secciones, class="n" en las celdas de
+números, class="al" en rojo y class="bi" en verde. Para los números grandes de arriba:
+<div class="kpis"><div class="kpi"><b>42</b><span>VIENTRES</span></div></div>
+
+Después de crearlo, decile en qué URL quedó y qué muestra.
+
+DESTINOS: todo animal que sale del plantel va a algún lado, y no todas las salidas son fracasos — el mejor toro de la camada también se va, como reproductor.
+
+Los destinos posibles son:
+· Para vientres: VENTA PREÑADA (se vende servida), TERMINACION (al corral, se vende gorda), VENTA DIRECTA.
+· Para machos: TORO REPRODUCTOR (queda de padre), TORO TERMINACION (no calificó), NOVILLO TERMINACION (a carne).
+· QUEDA: sigue en el plantel.
+
+El motivo es aparte del destino: una vaca puede descartarse por edad y venderse preñada igual. Motivos: NO_DESTETO, VACIA, EDAD, PRODUCTIVIDAD, CARACTER, APLOMOS, UBRE, SANIDAD, SELECCION, COMERCIAL.
+
+Si te piden marcar animales — "las vacías van a terminación", "el S402 queda de reproductor", "la 2077 se vende preñada" — usá la herramienta escribir sobre la tabla destinos, o consultá primero quiénes cumplen la condición y marcá a cada uno. Contá cuántos marcaste y cuáles.
+
+Una vaca vacía no necesariamente va a terminación: si está gorda puede venderse directa. Preguntá si no está claro.
 
 CUANDO TE CORRIGEN: si te dicen que un dato está mal — "la 23 no tiene ternero", "esa vaca no existe",
 "el RP correcto es otro" — no es una pregunta: es una corrección. Verificá qué hay cargado, mostrale
@@ -266,7 +286,7 @@ async function conversar(db, campoNombre, mensajes, opciones = {}) {
     const ultima = vuelta === MAX - 1;
     const r = await anthropic.messages.create({
       model: MODELO,
-      max_tokens: 2000,
+      max_tokens: 8000,
       system: instrucciones(db, campoNombre) + (ultima
         ? "\n\nSE TE ACABÓ EL TIEMPO DE CONSULTAR. Respondé ahora con lo que averiguaste. Si te falta algo, decí qué encontraste y qué te falta."
         : ""),
@@ -317,15 +337,60 @@ async function conversar(db, campoNombre, mensajes, opciones = {}) {
 
 // ── TABLEROS QUE ARMA EL BOT ─────────────────────────────────────────────────
 
+// La estética del sistema, para que todos los tableros salgan parejos sin que
+// el bot tenga que escribirla cada vez (y sin gastar tokens en eso).
+function plantilla(titulo, subtitulo, contenido) {
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${titulo}</title>
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@300;400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+:root{--azul:#0B3D7C;--azul2:#072957;--oro:#C9A24B;--tinta:#10243f;--papel:#F7F3EC;--linea:#E2D9CB;--gris:#8A827A;--verde:#1a7a4a;--rojo:#B83232}
+*{box-sizing:border-box}
+body{margin:0;background:var(--papel);color:var(--tinta);font-family:Oswald,system-ui,sans-serif;font-weight:300;font-size:14px}
+header{background:var(--azul2);color:#fff;padding:18px 24px;border-bottom:4px solid var(--oro)}
+header h1{margin:0;font-size:22px;font-weight:600;letter-spacing:2.5px;text-transform:uppercase}
+header p{margin:4px 0 0;font-size:11px;color:var(--oro);letter-spacing:2px;text-transform:uppercase}
+main{padding:20px 24px 50px;max-width:1400px}
+h2{font-size:13px;letter-spacing:2px;text-transform:uppercase;color:var(--azul);font-weight:500;
+   margin:26px 0 10px;border-bottom:2px solid var(--linea);padding-bottom:6px}
+h2:first-child{margin-top:0}
+.kpis{display:flex;gap:1px;background:var(--linea);border:1px solid var(--linea);flex-wrap:wrap;margin-bottom:20px}
+.kpi{background:#fff;padding:12px 18px;flex:1;min-width:112px}
+.kpi b{display:block;font-size:25px;font-weight:500;color:var(--azul);line-height:1.1}
+.kpi span{font-size:9.5px;letter-spacing:1.1px;text-transform:uppercase;color:var(--gris)}
+.kpi.al b{color:var(--rojo)}.kpi.bien b{color:var(--verde)}.kpi.oro b{color:#B8860B}
+table{width:100%;border-collapse:collapse;background:#fff;font-size:13px;margin-bottom:18px}
+th{background:var(--azul2);color:#fff;text-align:left;font-size:9.5px;letter-spacing:1.2px;
+   text-transform:uppercase;font-weight:400;padding:10px 8px;white-space:nowrap}
+td{padding:8px;border-bottom:1px solid var(--linea)}
+tr:hover td{background:#FAF7F0}
+th.n,td.n,.n{text-align:right;font-variant-numeric:tabular-nums}
+.mut{color:var(--gris)}.al{color:var(--rojo);font-weight:500}.bi{color:var(--verde);font-weight:500}
+.tag{font-size:9px;letter-spacing:1.1px;text-transform:uppercase;padding:2px 8px;border-radius:2px;
+  background:rgba(11,61,124,.1);color:var(--azul)}
+p{line-height:1.6;color:var(--gris);max-width:80ch}
+a{color:var(--azul)}
+footer{padding:16px 24px;font-size:11px;color:var(--gris);border-top:1px solid var(--linea)}
+</style></head><body>
+<header><h1>${titulo}</h1>${subtitulo ? `<p>${subtitulo}</p>` : ""}</header>
+<main>${contenido}</main>
+<footer>Generado por RODEO · <a href="/">volver al tablero</a></footer>
+</body></html>`;
+}
+
 function guardarTablero(db, t, campoKey) {
   const slug = String(t.slug || "").toLowerCase()
     .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
   if (!slug) throw new Error("El nombre para la url no sirve");
-  let html = String(t.html || "");
-  if (!/<html/i.test(html)) throw new Error("El HTML tiene que ser una página completa");
 
-  // El tablero necesita saber a qué campo pedirle los datos.
+  const cuerpo = String(t.contenido || t.html || "").trim();
+  if (!cuerpo) throw new Error("Falta el contenido del tablero");
+
+  // Si mandó una página entera igual se acepta; si no, se envuelve.
+  let html = /<html/i.test(cuerpo) ? cuerpo
+    : plantilla(t.titulo || slug, t.subtitulo, cuerpo);
   if (campoKey) html = html.replace(/CAMPO_AQUI|__CAMPO__/g, campoKey);
 
   db.prepare(`INSERT INTO tableros (slug,titulo,pedido,html,creado_por) VALUES (?,?,?,?,?)
@@ -493,6 +558,45 @@ app.get("/api/terminacion", (req, res) => {
       }
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+
+// ── DESTINOS ─────────────────────────────────────────────────────────────────
+// A dónde va cada animal cuando sale del plantel. No todas las salidas son
+// fracasos: el mejor toro también se va, como reproductor.
+app.get("/api/destinos", (req, res) => {
+  if (!destinosMod) return res.status(503).json({ error: "Módulo no disponible" });
+  const db = dbDe(req);
+  try {
+    const pl = plantelMod.plantel(db);
+    res.json(destinosMod.listar(db, pl.filas, { temporada: req.query.temporada }));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/api/destinos", (req, res) => {
+  if (!destinosMod) return res.status(503).json({ error: "Módulo no disponible" });
+  const { rp, rps, destino } = req.body;
+  if (!destino) return res.status(400).json({ error: "Falta el destino" });
+  const db = dbDe(req);
+  try {
+    const r = Array.isArray(rps) && rps.length
+      ? destinosMod.marcarVarios(db, rps, destino, req.body)
+      : destinosMod.marcar(db, rp, destino, req.body);
+    res.status(r.ok ? 200 : 400).json(r);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete("/api/destinos/:rp", (req, res) => {
+  if (!destinosMod) return res.status(503).json({ error: "Módulo no disponible" });
+  try { res.json(destinosMod.sacar(dbDe(req), req.params.rp, req.query.temporada)); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Cuando el animal efectivamente sale del campo.
+app.post("/api/destinos/:rp/salida", (req, res) => {
+  if (!destinosMod) return res.status(503).json({ error: "Módulo no disponible" });
+  try { res.json(destinosMod.concretar(dbDe(req), req.params.rp, req.body)); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post("/api/notas", (req, res) => {
