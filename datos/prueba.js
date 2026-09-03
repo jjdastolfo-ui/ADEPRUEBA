@@ -33,7 +33,7 @@ seccion("Buscar");
 const b1 = animalesMod.buscar(db, "011");
 ok(b1.length && b1[0].rp === "11", "'011' encuentra a la 11 primero");
 ok(animalesMod.buscar(db, "b 332")[0].rp === "B332", "'b 332' encuentra al toro B332");
-ok(animalesMod.buscar(db, "hércules").length > 5 && animalesMod.buscar(db, "hércules")[0].coincide === "padre", "'hércules' encuentra hijos por padre");
+ok(animalesMod.buscar(db, "hércules").length > 5 && animalesMod.buscar(db, "hércules").slice(1).every(a => a.coincide === "padre"), "'hércules' encuentra al toro y después a sus hijos por padre");
 ok(animalesMod.buscar(db, "renga").length === 1, "busca en las notas de campo");
 ok(animalesMod.porRp(db, " 011 ").rp === "11", "porRp tolera ceros y espacios");
 
@@ -88,10 +88,12 @@ const dup = relevarMod.pesadas(db, { filas: [{ rp: "11", peso: "432" }], fecha: 
 ok(dup.mal === 1 && /Ya estaba/.test(dup.filas[0].error), "no repite una pesada igual");
 const san = relevarMod.sanidad(db, { lote_id: 1, producto: "IVERMECTINA", dosis: "5 ml", simular: true });
 ok(san.bien === 18, "sanidad a un lote entero");
-const nac = relevarMod.nacimientos(db, { filas: [{ rp: "C900", madre_rp: "011", fecha_nac: "01/09/2026", sexo: "h", pelo: "colorada", peso_nac: "31,5" }] });
+// Una madre que ya tiene cría este año, para que avise.
+const madreConCria = db.prepare("SELECT madre_rp FROM animales WHERE fecha_nac LIKE '2026%' AND madre_rp IS NOT NULL AND madre_rp NOT LIKE '%0%' LIMIT 1").get().madre_rp;
+const nac = relevarMod.nacimientos(db, { filas: [{ rp: "C900", madre_rp: "0" + madreConCria, fecha_nac: "01/09/2026", sexo: "h", pelo: "colorada", peso_nac: "31,5" }] });
 ok(nac.bien === 1 && animalesMod.porRp(db, "C900").categoria === "TERNERA", "nacimiento crea la ternera");
 ok(nac.filas[0].avisos.some(a => /ya tiene cría/.test(a)), "avisa que la madre ya tiene cría este año");
-const nac2 = relevarMod.nacimientos(db, { filas: [{ rp: "C900", madre_rp: "11", fecha_nac: "2026-09-01", sexo: "M" }], simular: true });
+const nac2 = relevarMod.nacimientos(db, { filas: [{ rp: "C900", madre_rp: madreConCria, fecha_nac: "2026-09-01", sexo: "M" }], simular: true });
 ok(nac2.mal === 1, "no deja repetir el RP");
 const med = relevarMod.mediciones(db, { filas: [{ rp: "13", valor: "3,5" }], tipo: "CC", simular: true });
 ok(med.bien === 1 && med.filas[0].valor === 3.5, "medición con coma decimal");
@@ -110,6 +112,16 @@ const pl = relevarMod.planilla(db, { lote_id: 1, campoNombre: "Prueba" }, export
 ok(pl.buffer.length > 2000, "planilla de relevamiento en Excel");
 const plh = relevarMod.planilla(db, { conjunto: "recria", formato: "html" }, exportarMod, mods);
 ok(plh.buffer.toString().includes("Observaciones"), "planilla imprimible con las columnas para anotar");
+
+seccion("Toros");
+const tor = animalesMod.toros(db);
+ok(tor.filas.length === 6 && tor.resumen.total === 6, "seis toros activos");
+const her = tor.filas.find(t => t.nombre === "HERCULES");
+ok(her && her.rp === "B332" && her.hijos > 5 && her.destete_prom_hijos > 100 && her.ce >= 36, "Hércules tiene hijos (por nombre), destete promedio y CE");
+ok(animalesMod.buscar(db, "hercules")[0].rp === "B332" && animalesMod.buscar(db, "hercules")[0].coincide === "nombre", "buscar hercules encuentra al toro por nombre, primero");
+ok(animalesMod.porRp(db, "Hércules").rp === "B332", "porRp entiende el nombre del toro");
+ok(animalesMod.ficha(db, "B332").hijos.length === her.hijos, "la ficha del toro lista los mismos hijos");
+ok(exportarMod.conjunto(db, mods, "toros").filas.length === 6, "conjunto toros para exportar");
 
 seccion("Destinos");
 ok(destinosMod.normalizarDestino("engorde", false) === "TERMINACION", "'engorde' es TERMINACION para una vaca");
@@ -167,7 +179,7 @@ const bot1 = botMod.crear({ plantelMod, animalesMod, destinosMod, exportarMod, r
       return { content: [texto(`Fallaron ${out.total} vacas.`)] };
     }
   ]) });
-ok(bot1.HERRAMIENTAS.map(h => h.name).join() === "plantel,ficha,buscar,consultar,escribir,relevar,crear_tablero,exportar_archivo,destinar,recordar", "las diez herramientas, en orden fijo");
+ok(bot1.HERRAMIENTAS.map(h => h.name).join() === "plantel,ficha,toros,buscar,consultar,escribir,relevar,crear_tablero,exportar_archivo,destinar,recordar", "las once herramientas, en orden fijo");
 const eventos = [];
 (async () => {
   const r = await bot1.responder(db, "Prueba", "¿cuántas fallaron?", { campoKey: "principal", canal: "web", usuario: "prueba", onEvento: e => eventos.push(e) });

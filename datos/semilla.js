@@ -56,8 +56,9 @@ const TOROS = [
 const SEMEN = ["ROBOVER FRANZ", "KARE 16", "ZEUS II", "MINIHUE", "HUINCA"];
 const PELOS = ["NEGRO", "NEGRO", "NEGRO", "COLORADO", "COLORADO"];
 
-const insA = db.prepare(`INSERT INTO animales (rp,chip,sexo,categoria,estado,fecha_nac,pelo,raza,madre_rp,padre_rp,hbu,registro)
-  VALUES (@rp,@chip,@sexo,@categoria,@estado,@fecha_nac,@pelo,'A. ANGUS',@madre_rp,@padre_rp,@hbu,'PP')`);
+db.exec("ALTER TABLE animales ADD COLUMN nombre TEXT");
+const insA = db.prepare(`INSERT INTO animales (rp,chip,sexo,categoria,estado,fecha_nac,pelo,raza,madre_rp,padre_rp,hbu,registro,nombre)
+  VALUES (@rp,@chip,@sexo,@categoria,@estado,@fecha_nac,@pelo,'A. ANGUS',@madre_rp,@padre_rp,@hbu,'PP',@nombre)`);
 const insP = db.prepare("INSERT INTO pesadas (animal_id,fecha,peso,contexto) VALUES (?,?,?,?)");
 const insS = db.prepare(`INSERT INTO servicios (animal_id,temporada,tipo_servicio,semen_iatf,fecha_iatf,toro_natural,
   fecha_ingreso_toro,fecha_salida_toro,resultado,fecha_tacto) VALUES (?,?,?,?,?,?,?,?,?,?)`);
@@ -67,8 +68,9 @@ const insSan = db.prepare("INSERT INTO sanidad (animal_id,fecha,producto,dosis,m
 for (const t of TOROS) {
   const id = insA.run({ rp: t.rp, chip: null, sexo: "M", categoria: "TORO", estado: "ACTIVO",
     fecha_nac: `${entre(2017, 2022)}-0${entre(7, 9)}-${entre(10, 28)}`, pelo: elegir(PELOS),
-    madre_rp: null, padre_rp: null, hbu: t.hba }).lastInsertRowid;
+    madre_rp: null, padre_rp: null, hbu: t.hba, nombre: t.nombre }).lastInsertRowid;
   insP.run(id, "2026-06-15", entre(780, 980), "ADULTO");
+  db.prepare("INSERT INTO mediciones (animal_id,fecha,tipo,valor) VALUES (?,?,?,?)").run(id, "2026-06-15", "CE", entre(36, 44));
 }
 
 // Vientres: 90 vacas y vaquillonas nacidas entre 2015 y 2023.
@@ -89,7 +91,7 @@ for (let i = 0; i < 90; i++) {
   const v = { rp, chip: rnd() < 0.7 ? `3201003626${entre(1000, 9999)}` : null, sexo: "H",
     categoria: anioNac >= 2023 ? "VAQUILLONA" : "VACA", estado: "ACTIVO",
     fecha_nac: `${anioNac}-0${entre(7, 9)}-${String(entre(1, 28)).padStart(2, "0")}`,
-    pelo: elegir(PELOS), madre_rp: null, padre_rp: elegir(TOROS).nombre, hbu: String(entre(840000, 905000)) };
+    pelo: elegir(PELOS), madre_rp: null, padre_rp: elegir(TOROS).nombre, hbu: String(entre(840000, 905000)), nombre: null };
   v.id = insA.run(v).lastInsertRowid;
   v.pesoAdulto = entre(400, 620);
   insP.run(v.id, v.fecha_nac, r1(24 + rnd() * 12), "NACIMIENTO");
@@ -135,7 +137,7 @@ for (const v of vientres) {
     const tid = insA.run({ rp: rpT, chip: rnd() < 0.6 ? `3201003626${entre(1000, 9999)}` : null, sexo,
       categoria: sexo === "M" ? "TERNERO" : "TERNERA", estado: muerto ? "MUERTO" : "ACTIVO",
       fecha_nac: parto, pelo: elegir(PELOS), madre_rp: v.rp,
-      padre_rp: origen === "IATF" ? semen : toro.nombre, hbu: null }).lastInsertRowid;
+      padre_rp: origen === "IATF" ? semen : toro.nombre, hbu: null, nombre: null }).lastInsertRowid;
     insP.run(tid, parto, pn, "NACIMIENTO");
     if (muerto) continue;
     const edadDias = Math.round((new Date(HOY) - new Date(parto)) / 86400000);
