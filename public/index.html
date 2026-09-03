@@ -205,7 +205,16 @@ h3.s .btn{margin-left:auto}
 .sug button{background:var(--papel);border:1px solid var(--linea);border-radius:14px;padding:6px 12px;
   font-size:12px;color:var(--gris);cursor:pointer;text-align:left}
 .sug button:hover{border-color:var(--azul);color:var(--azul)}
-.env{border-top:1px solid var(--linea);padding:11px 14px;display:flex;gap:8px}
+.env{border-top:1px solid var(--linea);padding:11px 14px;display:flex;gap:8px;align-items:center}
+.env .clip{background:none;border:1px solid var(--linea);color:var(--gris);border-radius:50%;width:36px;height:36px;cursor:pointer;font-size:16px;flex:none}
+.env .clip:hover{border-color:var(--azul);color:var(--azul)}
+.adj{display:flex;gap:6px;flex-wrap:wrap;padding:0 14px 8px}
+.adj .a{font-size:11.5px;background:var(--papel);border:1px solid var(--linea);border-radius:12px;padding:4px 10px;display:flex;gap:6px;align-items:center;max-width:100%}
+.adj .a span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px}
+.adj .a b{cursor:pointer;color:var(--gris)} .adj .a b:hover{color:var(--rojo)}
+.chat.arrastre{outline:3px dashed var(--oro);outline-offset:-6px}
+.msg .adjs{font-size:11px;opacity:.85;margin-bottom:4px}
+.msg.yo img{max-width:100%;max-height:180px;border-radius:6px;display:block;margin-bottom:6px}
 .env input{flex:1;font-size:13px;padding:9px 12px;border:1px solid var(--linea);border-radius:18px}
 .env input:focus{outline:none;border-color:var(--azul)}
 .env button{background:var(--azul);color:#fff;border:none;border-radius:50%;width:36px;height:36px;cursor:pointer;font-size:15px}
@@ -311,8 +320,11 @@ h3.s .btn{margin-left:auto}
     <span class="modelo" id="chModelo"></span></div>
   <div class="msgs" id="msgs"></div>
   <div class="sug" id="sug"></div>
+  <div class="adj" id="adj"></div>
   <div class="env">
-    <input id="txt" placeholder="Escribí lo que necesitás…" onkeydown="if(event.key==='Enter')enviar()">
+    <button class="clip" title="Adjuntar foto, PDF, Excel, CSV o Word" onclick="document.getElementById('adjInput').click()">📎</button>
+    <input type="file" id="adjInput" multiple accept="image/*,.pdf,.xlsx,.xls,.csv,.tsv,.txt,.docx,.json" style="display:none" onchange="agregarAdjuntos(this.files);this.value=''">
+    <input id="txt" placeholder="Escribí lo que necesitás… o mandale un archivo" onkeydown="if(event.key==='Enter')enviar()" onpaste="pegar(event)">
     <button onclick="enviar()">↑</button>
   </div>
 </div>
@@ -418,8 +430,10 @@ const VISTAS = {
   ]},
   term: { titulo:'Terminación', conjunto:'terminacion', cols:[
     {k:'rp',t:'RP',cls:'rp'},
+    {k:'origen',t:'Origen',fmt:v=>v==='corral'?'<span class="tag t-cabeza">en corral</span>':'<span class="tag t-cola">marcado</span>'},
     {k:'lote',t:'Lote',cls:'mut'},
-    {k:'potrero',t:'Potrero',cls:'mut'},
+    {k:'potrero',t:'Potrero',cls:'mut',oculta:1},
+    {k:'destino',t:'Destino',cls:'mut',fmt:v=>v?esc(v):'<span class="mut">—</span>'},
     {k:'categoria',t:'Categoría',cls:'mut'},
     {k:'meses',t:'Edad (m)',num:1},
     {k:'fecha_ingreso',t:'Ingresó',cls:'mut',fmt:v=>fec(v)||'—'},
@@ -538,7 +552,7 @@ function datosDe(v){
   if(v==='animales') return D.todos;
   const anio = D.plantel.anio_paricion, cortes = D.plantel.calendario && D.plantel.calendario.cortes;
   if(v==='nac') return D.todos.filter(a=>String(a.fecha_nac||'').startsWith(anio) && a.madre_rp).map(a=>({...a, bloque: bloqueDe(a.fecha_nac, cortes)}));
-  if(v==='recria') return D.animales.filter(a=>a.edad_meses!=null && a.edad_meses>=6 && a.edad_meses<=24);
+  if(v==='recria') return D.animales.filter(a=>a.edad_meses!=null && a.edad_meses>=6 && a.edad_meses<=20);
   return [];
 }
 function bloqueDe(f, c){
@@ -567,7 +581,9 @@ function pintar(){
     [R.eficiencia_prom!=null?R.eficiencia_prom+'%':'—','Eficiencia','oro',''],
     [R.ipp_prom||'—','Int. partos','','']
   ] : vista==='term' ? (()=>{ const T=D.terminacion.resumen; return [
-      [T.total||0,'En corral','',''],
+      [T.total||0,'Terminando','',''],
+      [T.en_corral||0,'En corral','',''],
+      [T.marcados||0,'Marcados sin corral',T.marcados?'oro':'',''],
       [T.peso_prom||'—','Peso prom kg','',''],
       [T.gdp_prom||'—','GDP promedio',T.gdp_prom>=1.1?'bien':T.gdp_prom<0.8?'al':'',''],
       [T.ganancia_prom!=null?'+'+T.ganancia_prom:'—','Ganó prom kg','bien',''],
@@ -1126,7 +1142,7 @@ function saludo(){
     '¿cuál es la vaca más eficiente y por qué?',
     'dame un excel de las vacas que no destetaron',
     '¿hay algo mal cargado?'
-  ].map(s=>`<button onclick="usar(this)">${s}</button>`).join('');
+  ].map(s=>`<button onclick="usar(this)">${s}</button>`).join('') + '<div class="mut" style="font-size:11px;padding:4px 2px">📎 También le podés mandar una foto de la libreta, un Excel, un CSV o un PDF: arrastralo acá o pegalo.</div>';
 }
 async function cargarConversacion(){
   try{
@@ -1142,10 +1158,56 @@ async function nuevaConversacion(){
 }
 function usar(b){ document.getElementById('txt').value=b.textContent; enviar(); }
 
-// Manda la pregunta y va mostrando lo que el bot hace mientras piensa.
+// ── Adjuntos: fotos, PDF, Excel, CSV, Word ─────────────────────────────────
+let adjuntos = [];   // [{nombre, mime, base64, vista}]
+const chatEl = document.querySelector('.chat');
+chatEl.addEventListener('dragover', e=>{ e.preventDefault(); chatEl.classList.add('arrastre'); });
+chatEl.addEventListener('dragleave', ()=>chatEl.classList.remove('arrastre'));
+chatEl.addEventListener('drop', e=>{ e.preventDefault(); chatEl.classList.remove('arrastre'); agregarAdjuntos(e.dataTransfer.files); });
+function pegar(e){ const items=[...(e.clipboardData||{}).items||[]].filter(i=>i.kind==='file'); if(items.length){ e.preventDefault(); agregarAdjuntos(items.map(i=>i.getAsFile())); } }
+async function agregarAdjuntos(files){
+  for(const f of [...files]){
+    if(!f) continue;
+    if(f.size > 40*1024*1024){ toast(`${f.name} pesa más de 40 MB`,4000); continue; }
+    try{
+      const a = /^image\//.test(f.type) ? await achicarImagen(f) : { nombre:f.name, mime:f.type||'application/octet-stream', base64: await base64De(f) };
+      adjuntos.push(a);
+    }catch(e){ toast('No pude leer '+f.name+': '+e.message,4000); }
+  }
+  pintarAdjuntos();
+}
+const base64De = f => new Promise((ok,no)=>{ const r=new FileReader(); r.onload=()=>ok(String(r.result).split(',')[1]); r.onerror=no; r.readAsDataURL(f); });
+// Las fotos del teléfono pesan 5-12 MB: se achican a 1800 px como JPG antes de mandarlas.
+function achicarImagen(f){
+  return new Promise((ok,no)=>{
+    const img=new Image(); const url=URL.createObjectURL(f);
+    img.onload=()=>{
+      const max=1800, esc=Math.min(1, max/Math.max(img.width,img.height));
+      const c=document.createElement('canvas'); c.width=Math.round(img.width*esc); c.height=Math.round(img.height*esc);
+      c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+      const data=c.toDataURL('image/jpeg',0.85); URL.revokeObjectURL(url);
+      ok({ nombre: f.name.replace(/\.[^.]+$/,'')+'.jpg', mime:'image/jpeg', base64: data.split(',')[1], vista: data });
+    };
+    img.onerror=()=>{ URL.revokeObjectURL(url); no(new Error('no es una imagen que pueda abrir')); };
+    img.src=url;
+  });
+}
+function pintarAdjuntos(){
+  document.getElementById('adj').innerHTML = adjuntos.map((a,i)=>`<div class="a" title="${esc(a.nombre)}">${a.vista?'🖼':/pdf/.test(a.mime)?'📄':/sheet|excel|csv/.test(a.mime+a.nombre)?'📊':'📎'} <span>${esc(a.nombre)}</span> <b onclick="adjuntos.splice(${i},1);pintarAdjuntos()">✕</b></div>`).join('');
+}
+
+// Manda la pregunta (y los adjuntos) y va mostrando lo que el bot hace mientras piensa.
 async function enviar(){
-  const el=document.getElementById('txt'), t=el.value.trim(); if(!t) return;
-  el.value=''; msg('yo',t); document.getElementById('sug').innerHTML='';
+  const el=document.getElementById('txt'), t=el.value.trim(); if(!t && !adjuntos.length) return;
+  const misAdjuntos = adjuntos; adjuntos=[]; pintarAdjuntos();
+  el.value='';
+  const mio = msg('yo', t || (misAdjuntos.length?'':''));
+  if(misAdjuntos.length){
+    const d=document.createElement('div'); d.className='adjs';
+    misAdjuntos.forEach(a=>{ if(a.vista){ const im=document.createElement('img'); im.src=a.vista; d.appendChild(im); } const s=document.createElement('div'); s.textContent='📎 '+a.nombre; d.appendChild(s); });
+    mio.insertBefore(d, mio.firstChild);
+  }
+  document.getElementById('sug').innerHTML='';
   const p=msg('bot',''); p.classList.add('pen');
   const vivo=document.createElement('div'); vivo.className='vivo'; p.appendChild(vivo);
   const pen=document.createElement('div'); pen.className='pen'; pen.textContent='pensando…'; vivo.appendChild(pen);
@@ -1158,11 +1220,12 @@ async function enviar(){
     else if(ev.tipo==='pensando'){ pensando+=ev.delta; pen.textContent=pensando.slice(-160); }
     else if(ev.tipo==='texto'){ texto+=ev.delta; txt.textContent=texto; pen.style.display='none'; m.scrollTop=m.scrollHeight; }
     else if(ev.tipo==='paso'){ paso(ev.texto, ev.error); pen.textContent='pensando…'; }
+    else if(ev.tipo==='adjuntos'){ ev.adjuntos.forEach(a=>paso(a.error?`${a.nombre}: ${a.error}`:`leí ${a.nombre}${a.hojas?' ('+a.hojas.map(h=>h.nombre+': '+h.filas+' filas').join(', ')+')':''}`, !!a.error)); }
     else if(ev.tipo==='fin'||ev.tipo==='error'){ fin=ev; }
   };
   try{
     const r=await fetch(urlCampo('/api/chat/stream'),{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({mensaje:t, sesion})});
+      body:JSON.stringify({mensaje:t, sesion, adjuntos: misAdjuntos.map(a=>({nombre:a.nombre, mime:a.mime, base64:a.base64}))})});
     if(!r.ok || !r.body){ throw new Error('El servidor respondió '+r.status); }
     const lector=r.body.getReader(); const dec=new TextDecoder(); let buf='';
     while(true){
