@@ -66,6 +66,24 @@ se bajan sus pesadas.
 Cada tabla tiene su propio filtro (mismo criterio), filtros por pelaje,
 categoría, estado, bloque y sexo, y un selector de columnas que se recuerda.
 
+## Las pestañas del tablero
+
+Cada pestaña tiene su propia regla; un animal puede estar en varias.
+
+| Pestaña | Quién aparece |
+|---|---|
+| Plantel | hembras activas que son VACA o VIENTRE, o que ya tienen cría, o que entraron a servicio |
+| Toros | machos activos con categoría TORO. Sus hijos se cuentan por `padre_rp` igual al RP **o al nombre** del toro |
+| Nacimientos | nacidos en el año de parición en curso, con madre cargada |
+| Recría | activos de 6 a 24 meses |
+| Terminación | los que están en un **lote** cuyo nombre contiene TERMINACION o CORRAL (no mira categoría ni destino) |
+| Destinos | lo marcado en la tabla `destinos` para la temporada actual |
+| No destetaron | las del plantel con estado FALLÓ |
+| Todos | todos los registrados, con filtro por estado |
+
+Los animales tienen columna `nombre` (se agrega sola en bases viejas): sirve
+sobre todo para los toros, así "Hércules" se encuentra y se cuenta como padre.
+
 ## Exportar
 
 Botón **Exportar** en cada tabla:

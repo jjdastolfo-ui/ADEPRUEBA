@@ -77,6 +77,16 @@ const HERRAMIENTAS = [
     input_schema: { type: "object", properties: { rp: { type: "string" } }, required: ["rp"] }
   },
   {
+    name: "toros",
+    description: "Los toros del campo (reproductores) con lo que dicen de ellos sus hijos: cuántos, cuántos este " +
+      "año, peso al nacer y al destete promedio de los hijos, temporadas en que trabajaron, preñez lograda, " +
+      "circunferencia escrotal, lote y destino. Es la pestaña Toros del tablero. Un hijo es del toro si su " +
+      "padre_rp coincide con el RP o con el nombre del toro.",
+    input_schema: { type: "object", properties: {
+      estado: { type: "string", description: "ACTIVO (default) o TODOS." },
+      anio: { type: "string", description: "Año para contar los hijos del año. Por defecto el actual." } } }
+  },
+  {
     name: "buscar",
     description: "Encuentra animales por RP (tolerando ceros y espacios), caravana, HBA, madre, padre o palabras " +
       "de sus notas. Usalo cuando un RP no aparece con SQL exacto, cuando puede haber más de un animal " +
@@ -318,6 +328,7 @@ ${esquema(db)}
 
 QUÉ HERRAMIENTA PARA QUÉ:
 · plantel: estados, eficiencias, bloques, quién falló y por qué. Es lo que ve el tablero: la verdad para esas cosas. No las recalcules con SQL.
+· toros: los reproductores y el desempeño de sus hijos. La pestaña Toros del tablero.
 · ficha: todo de un animal, con su historial campaña por campaña.
 · buscar: cuando un RP no aparece exacto o puede haber dos con el mismo número.
 · consultar: SQL para lo que plantel y ficha no cubren. Un SELECT por vez.
@@ -398,6 +409,7 @@ ${cal.cortes ? `Bloques de la parición en curso: cabeza hasta ${cal.cortes.CABE
         // Recortes para no inflar el contexto: lo reciente y lo relevante.
         return { ...f, pesadas: (f.pesadas || []).slice(-24), sanidad: (f.sanidad || []).slice(0, 12), mediciones: (f.mediciones || []).slice(0, 12), _id: undefined, _crias: undefined, _servicios: undefined };
       }
+      case "toros": return animalesMod.toros(db, { estado: input.estado, anio: input.anio });
       case "buscar": return { resultados: animalesMod.buscar(db, input.q, { limite: 20 }) };
       case "consultar": return correrConsulta(db, input.sql);
       case "escribir":
@@ -461,6 +473,7 @@ ${cal.cortes ? `Bloques de la parición en curso: cabeza hasta ${cal.cortes.CABE
     if (nombre === "plantel") return { tipo: "consulta", herramienta: nombre, porque: `plantel${input.estado ? " " + input.estado : ""}`, filas: out.total };
     if (nombre === "ficha") return { tipo: "consulta", herramienta: nombre, porque: `ficha de ${out.rp || input.rp}` };
     if (nombre === "buscar") return { tipo: "consulta", herramienta: nombre, porque: `buscar "${input.q}"`, filas: (out.resultados || []).length };
+    if (nombre === "toros") return { tipo: "consulta", herramienta: nombre, porque: "toros", filas: (out.filas || []).length };
     if (nombre === "escribir") return { tipo: "escritura", herramienta: nombre, que: input.que, cambios: out.cambios };
     if (nombre === "relevar") return { tipo: input.simular ? "consulta" : "escritura", herramienta: nombre, que: `relevar ${input.tipo}`, cambios: out.bien, porque: out.mensaje };
     if (nombre === "crear_tablero") return { tipo: "tablero", herramienta: nombre, slug: out.slug, url: out.url };
@@ -474,6 +487,7 @@ ${cal.cortes ? `Bloques de la parición en curso: cabeza hasta ${cal.cortes.CABE
     if (nombre === "plantel") return `miro el plantel${input.estado ? " (" + input.estado + ")" : ""}`;
     if (nombre === "ficha") return `abro la ficha de ${input.rp}`;
     if (nombre === "buscar") return `busco "${input.q}"`;
+    if (nombre === "toros") return "miro los toros";
     if (nombre === "escribir") return input.que || "escribo en la base";
     if (nombre === "relevar") return `${input.simular ? "reviso" : "cargo"} ${input.tipo}`;
     if (nombre === "crear_tablero") return `armo el tablero "${input.titulo}"`;

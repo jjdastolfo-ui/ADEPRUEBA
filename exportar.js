@@ -53,7 +53,7 @@ const COLUMNAS = {
     { k: "bloque", t: "Bloque" }, { k: "se_atrasa", t: "Se atrasa" }, { k: "notas_texto", t: "Notas", ancho: 40 }
   ],
   animales: [
-    { k: "rp", t: "RP", ancho: 9 }, { k: "chip", t: "Caravana elec." }, { k: "hbu", t: "HBA" }, { k: "registro", t: "Registro" },
+    { k: "rp", t: "RP", ancho: 9 }, { k: "nombre", t: "Nombre" }, { k: "chip", t: "Caravana elec." }, { k: "hbu", t: "HBA" }, { k: "registro", t: "Registro" },
     { k: "sexo_texto", t: "Sexo" }, { k: "categoria", t: "Categoría" }, { k: "estado", t: "Estado" },
     { k: "fecha_nac", t: "Nacimiento", tipo: F }, { k: "edad_meses", t: "Edad (m)", tipo: E },
     { k: "pelo", t: "Pelaje" }, { k: "raza", t: "Raza" }, { k: "madre_rp", t: "Madre" }, { k: "padre_rp", t: "Padre" },
@@ -125,6 +125,16 @@ const COLUMNAS = {
     { k: "animal_rp", t: "RP", ancho: 9 }, { k: "fecha", t: "Fecha", tipo: F }, { k: "texto", t: "Nota", ancho: 50 },
     { k: "causa", t: "Entendido como" }, { k: "grave_texto", t: "Grave" }, { k: "usuario", t: "Quién" }
   ],
+  toros: [
+    { k: "rp", t: "RP", ancho: 9 }, { k: "nombre", t: "Nombre" }, { k: "hba", t: "HBA" }, { k: "chip", t: "Caravana elec." },
+    { k: "pelo", t: "Pelaje" }, { k: "categoria", t: "Categoría" }, { k: "estado", t: "Estado" },
+    { k: "fecha_nac", t: "Nacimiento", tipo: F }, { k: "edad_meses", t: "Edad (m)", tipo: E }, { k: "padre", t: "Padre" }, { k: "madre", t: "Madre" },
+    { k: "peso_actual", t: "Peso", tipo: D }, { k: "ultima_pesada", t: "Última pesada", tipo: F }, { k: "ce", t: "CE", tipo: D },
+    { k: "hijos", t: "Hijos", tipo: E }, { k: "hijos_anio", t: "Hijos del año", tipo: E }, { k: "machos", t: "Machos", tipo: E }, { k: "hembras", t: "Hembras", tipo: E },
+    { k: "pn_prom_hijos", t: "PN prom hijos", tipo: D }, { k: "destete_prom_hijos", t: "Destete prom hijos", tipo: D },
+    { k: "servicios", t: "Servicios", tipo: E }, { k: "temporadas", t: "Temporadas" }, { k: "prenez", t: "Preñez", tipo: P },
+    { k: "lote", t: "Lote" }, { k: "potrero", t: "Potrero" }, { k: "destino", t: "Destino" }, { k: "notas", t: "Notas", ancho: 40 }
+  ],
   lotes: [
     { k: "lote", t: "Lote" }, { k: "potrero", t: "Potrero" }, { k: "rp", t: "RP", ancho: 9 },
     { k: "categoria", t: "Categoría" }, { k: "sexo_texto", t: "Sexo" }, { k: "fecha_ingreso", t: "Ingresó", tipo: F },
@@ -133,7 +143,7 @@ const COLUMNAS = {
 };
 
 const NOMBRES = {
-  plantel: "Plantel", animales: "Animales", nacimientos: "Nacimientos", recria: "Recría",
+  plantel: "Plantel", toros: "Toros", animales: "Animales", nacimientos: "Nacimientos", recria: "Recría",
   terminacion: "Terminación", destinos: "Destinos", fallos: "No destetaron", pesadas: "Pesadas",
   servicios: "Servicios", sanidad: "Sanidad", mediciones: "Mediciones", notas: "Notas de campo", lotes: "Lotes"
 };
@@ -154,6 +164,10 @@ function datos(db, mods, clave, opciones = {}) {
         se_atrasa: f.se_atrasa ? "sí" : null }));
       if (clave === "fallos") filas = filas.filter(f => f.estado === "FALLÓ");
       return { filas, subtitulo: `Parición ${p.anio_paricion} · ${filas.length} vientres` };
+    }
+    case "toros": {
+      const t = animalesMod.toros(db, { estado: opciones.estado || "ACTIVO", anio: opciones.anio });
+      return { filas: t.filas, subtitulo: `${t.resumen.total} toros · ${t.resumen.hijos_totales} hijos registrados` };
     }
     case "animales": {
       const filas = conSexo(animalesMod.listar(db, { estado: opciones.estado || "ACTIVO" }));
@@ -343,7 +357,7 @@ function armar(db, mods, clave, formato, opciones = {}) {
 
   if (clave === "rodeo") {
     if (formato !== "xlsx") throw new Error("El rodeo completo sólo sale en Excel: es una hoja por conjunto");
-    const claves = ["plantel", "nacimientos", "recria", "terminacion", "destinos", "fallos", "animales", "pesadas", "servicios", "sanidad", "notas", "lotes"];
+    const claves = ["plantel", "toros", "nacimientos", "recria", "terminacion", "destinos", "fallos", "animales", "pesadas", "servicios", "sanidad", "notas", "lotes"];
     const hojas = claves.map(k => { const c = conjunto(db, mods, k, { anio: opciones.anio });
       return { nombre: c.nombre, titulo: `${c.titulo} · ${campoNombre}`, subtitulo: c.subtitulo, columnas: c.columnas, filas: c.filas }; })
       .filter(h => h.filas.length || ["plantel", "animales"].includes(h.nombre.toLowerCase()));

@@ -304,6 +304,12 @@ app.get("/api/lote/:id/animales", (req, res) => {
   } catch (e) { res.json([]); }
 });
 
+// Los toros del campo, con lo que dicen de ellos sus hijos.
+app.get("/api/toros", (req, res) => {
+  try { res.json(animalesMod.toros(dbDe(req), { estado: req.query.estado, anio: req.query.anio })); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Todo lo que está en corral, con cuánto viene ganando cada uno.
 app.get("/api/terminacion", (req, res) => {
   try { res.json(animalesMod.terminacion(dbDe(req))); }
