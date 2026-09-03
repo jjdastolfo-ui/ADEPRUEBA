@@ -236,6 +236,7 @@ h3.s .btn{margin-left:auto}
     </div>
     <div class="tabs">
       <button class="tab on" data-v="plantel" onclick="verVista(this)">Plantel</button>
+      <button class="tab" data-v="toros" onclick="verVista(this)">Toros</button>
       <button class="tab" data-v="nac" onclick="verVista(this)">Nacimientos</button>
       <button class="tab" data-v="recria" onclick="verVista(this)">Recría</button>
       <button class="tab" data-v="term" onclick="verVista(this)">Terminación</button>
@@ -367,6 +368,26 @@ const VISTAS = {
     {k:'bloque',t:'Bloque real',fmt:v=>tag(v)},
     {k:'estado',t:'Estado',fmt:(v,f)=>f.causa_texto?`<span class="al">${esc(f.causa_texto)}</span>`:tag(v)}
   ]},
+  toros: { titulo:'Toros', conjunto:'toros', cols:[
+    {k:'rp',t:'RP',cls:'rp'},
+    {k:'nombre',t:'Nombre',fmt:v=>v?`<b>${esc(v)}</b>`:'<span class="mut">—</span>'},
+    {k:'hba',t:'HBA',cls:'mut'},
+    {k:'pelo',t:'Pelaje',fmt:v=>punto(v)},
+    {k:'edad_meses',t:'Edad (m)',num:1},
+    {k:'peso_actual',t:'Peso',num:1},
+    {k:'ultima_pesada',t:'Última pesada',cls:'mut',fmt:(v,f)=>v?fec(v)+(f.dias_sin_pesar>180?` <span class="al">+${f.dias_sin_pesar}d</span>`:''):'<span class="al">nunca</span>'},
+    {k:'ce',t:'CE',num:1},
+    {k:'hijos',t:'Hijos',num:1,fmt:v=>v?`<b>${v}</b>`:'<span class="mut">0</span>'},
+    {k:'hijos_anio',t:'Hijos del año',num:1},
+    {k:'pn_prom_hijos',t:'PN prom hijos',num:1},
+    {k:'destete_prom_hijos',t:'Destete prom hijos',num:1,fmt:v=>v==null?'—':`<span class="${v>=220?'bi':v<180?'al':''}">${v}</span>`},
+    {k:'servicios',t:'Servicios',num:1,oculta:1},
+    {k:'temporadas',t:'Temporadas',cls:'mut'},
+    {k:'prenez',t:'Preñez %',num:1,oculta:1,fmt:v=>v==null?'—':v+'%'},
+    {k:'lote',t:'Lote',cls:'mut'},
+    {k:'destino',t:'Destino',fmt:(v,f)=>v?`<span class="tag ${f.salio?'t-vendido':'t-preñada'}">${esc(v)}</span>`:'<span class="mut">—</span>'},
+    {k:'categoria',t:'Categoría',cls:'mut',oculta:1}
+  ]},
   nac: { titulo:'Nacimientos', conjunto:'nacimientos', cols:[
     {k:'rp',t:'RP',cls:'rp'},
     {k:'fecha_nac',t:'Nacimiento',cls:'mut',fmt:v=>fec(v)||'—'},
@@ -467,17 +488,19 @@ async function cargar(){
     if(act){ campo=act.key; document.getElementById('hBrand').textContent=act.nombre.toUpperCase(); }
   }catch(e){}
   try{
-    const [pl, an, te, de] = await Promise.all([
+    const [pl, an, te, de, to] = await Promise.all([
       fetch(urlCampo('/api/plantel')).then(r=>r.json()),
       fetch(urlCampo('/api/animales?estado=TODOS')).then(r=>r.json()),
       fetch(urlCampo('/api/terminacion')).then(r=>r.json()).catch(()=>null),
-      fetch(urlCampo('/api/destinos')).then(r=>r.json()).catch(()=>null)
+      fetch(urlCampo('/api/destinos')).then(r=>r.json()).catch(()=>null),
+      fetch(urlCampo('/api/toros')).then(r=>r.json()).catch(()=>null)
     ]);
     if(pl.error) throw new Error(pl.error);
     const todos = Array.isArray(an)?an:[];
     D = { plantel: pl, todos, animales: todos.filter(a=>String(a.estado||'ACTIVO').toUpperCase()==='ACTIVO'),
           terminacion: (te && !te.error) ? te : { filas:[], resumen:{} },
-          destinos: (de && !de.error) ? de : { filas:[], candidatos:[], resumen:{} } };
+          destinos: (de && !de.error) ? de : { filas:[], candidatos:[], resumen:{} },
+          toros: (to && !to.error) ? to : { filas:[], resumen:{} } };
     document.getElementById('hSub').textContent =
       `${pl.filas.length} vientres · parición ${pl.anio_paricion} · ${D.animales.length} animales activos`;
     llenarFiltros(); pintar(); if(!document.getElementById('msgs').children.length) cargarConversacion();
@@ -510,6 +533,7 @@ function datosDe(v){
   if(v==='plantel') return D.plantel.filas;
   if(v==='fallos') return D.plantel.filas.filter(f=>f.estado==='FALLÓ');
   if(v==='term') return D.terminacion.filas;
+  if(v==='toros') return D.toros.filas;
   if(v==='dest') return D.destinos.filas;
   if(v==='animales') return D.todos;
   const anio = D.plantel.anio_paricion, cortes = D.plantel.calendario && D.plantel.calendario.cortes;
@@ -559,6 +583,16 @@ function pintar(){
         [pd['TERMINACION']||0,'A terminación','',''],
         [pd['VENTA PREÑADA']||0,'Venta preñada','',''],
         [T.candidatos||0,'Candidatos sin marcar', T.candidatos?'al':'','']
+      ]; })()
+    : vista==='toros' ? (()=>{ const T=D.toros.resumen; return [
+        [T.total||0,'Toros','',''],
+        [T.con_hijos_anio||0,'Con hijos este año','bien',''],
+        [T.hijos_anio||0,'Hijos '+(D.toros.anio||''),'',''],
+        [T.hijos_totales||0,'Hijos registrados','',''],
+        [T.pn_prom_hijos||'—','PN prom hijos','',''],
+        [T.destete_prom_hijos||'—','Destete prom hijos','oro',''],
+        [T.en_corral||0,'En corral','',''],
+        [T.sin_pesar||0,'Sin pesar +6 meses',T.sin_pesar?'al':'','']
       ]; })()
     : vista==='nac' ? (()=>{ const f=datosDe('nac'); const pb=R.por_bloque||{}; const sinPn=f.filter(a=>a.peso_nac==null).length; return [
         [f.length,'Nacidos '+D.plantel.anio_paricion,'',''],
@@ -623,7 +657,7 @@ function filtrar(){
     if(fb && f.bloque!==fb) return false;
     if(fs && !String(f.sexo||'').toUpperCase().startsWith(fs)) return false;
     if(q){
-      const claves=[f.rp,f.hba,f.chip,f.padre,f.padre_rp,f.madre,f.madre_rp,f.ternero,f.lote,f.lote_actual,f.potrero,f.destino,f.motivo_texto,f.causa_texto,f.nota].filter(Boolean);
+      const claves=[f.rp,f.nombre,f.hba,f.chip,f.padre,f.padre_rp,f.madre,f.madre_rp,f.ternero,f.lote,f.lote_actual,f.potrero,f.destino,f.motivo_texto,f.causa_texto,f.nota,f.temporadas].filter(Boolean);
       const ok = claves.some(v=>{ const n=norm(v); return n.includes(nq) || compacto(v)===cq; });
       if(!ok) return false;
     }
@@ -723,7 +757,7 @@ function buscarGlobal(){
       gsSel = gsHits.length?0:-1;
       box.innerHTML = gsHits.length ? gsHits.map((a,i)=>`<div class="r ${i===gsSel?'sel':''}" onmousedown="irA('${esc(a.rp)}')">
         <b>${esc(a.rp)}</b>
-        <span class="d">${esc(a.categoria||'')} · ${sexo(a.sexo)}${a.pelo?' · '+esc(a.pelo):''}${a.fecha_nac?' · nac. '+fec(a.fecha_nac):''}${a.peso_actual?' · '+a.peso_actual+' kg':''}${a.madre_rp?' · madre '+esc(a.madre_rp):''}${a.padre_rp?' · padre '+esc(a.padre_rp):''}${a.estado&&a.estado!=='ACTIVO'?' · <span class="al">'+esc(a.estado)+'</span>':''}</span>
+        <span class="d">${a.nombre?'<b>'+esc(a.nombre)+'</b> · ':''}${esc(a.categoria||'')} · ${sexo(a.sexo)}${a.pelo?' · '+esc(a.pelo):''}${a.fecha_nac?' · nac. '+fec(a.fecha_nac):''}${a.peso_actual?' · '+a.peso_actual+' kg':''}${a.madre_rp?' · madre '+esc(a.madre_rp):''}${a.padre_rp?' · padre '+esc(a.padre_rp):''}${a.estado&&a.estado!=='ACTIVO'?' · <span class="al">'+esc(a.estado)+'</span>':''}</span>
         <span class="c">${esc(a.coincide||'')}</span></div>`).join('')
         : `<div class="vacio">Nada con "${esc(q)}"</div>`;
       box.classList.add('on');
@@ -788,7 +822,7 @@ async function abrirFicha(rp){
 
   document.getElementById('ovCard').innerHTML=`
     <div class="ct">
-      <div><h2>${esc(f.rp)}</h2><div class="id">${esc(f.categoria||'')} · ${sexo(f.sexo)}${f.hba?` · ${esc(f.hba)}`:''}${f.pelo?` · ${esc(f.pelo)}`:''}</div></div>
+      <div><h2>${esc(f.rp)}${f.nombre?` <span style="font-weight:300;font-size:20px">${esc(f.nombre)}</span>`:''}</h2><div class="id">${esc(f.categoria||'')} · ${sexo(f.sexo)}${f.hba?` · ${esc(f.hba)}`:''}${f.pelo?` · ${esc(f.pelo)}`:''}</div></div>
       <div class="acc">
         <button onclick="pesarDesdeFicha()">+ Pesar</button>
         <a href="${urlCampo('/api/exportar/pesadas.xlsx?rps='+encodeURIComponent(f.rp))}">⇩ Pesadas</a>
@@ -1034,7 +1068,7 @@ async function pintarArchivos(){
     <div class="caja">
       <h3>Tablas del sistema</h3>
       <p class="ayuda">Cada tabla del tablero se baja desde su pestaña con lo que se ve filtrado. Acá, las completas:</p>
-      <div>${['plantel','nacimientos','recria','terminacion','destinos','fallos','animales','pesadas','servicios','sanidad','mediciones','notas','lotes'].map(c=>
+      <div>${['plantel','toros','nacimientos','recria','terminacion','destinos','fallos','animales','pesadas','servicios','sanidad','mediciones','notas','lotes'].map(c=>
         `<span class="chip" onclick="bajarUrl('/api/exportar/${c}.xlsx')">⇩ ${c}</span>`).join('')}
         <span class="chip" style="border-color:var(--azul);color:var(--azul)" onclick="bajarUrl('/api/exportar/rodeo.xlsx')">⇩ Rodeo completo (todas las hojas)</span></div>
     </div>
