@@ -262,14 +262,16 @@ function ficha(db, rp, opciones = {}) {
 }
 
 // ── TERMINACIÓN ──────────────────────────────────────────────────────────────
-// Lo que está en corral, con cuánto viene ganando cada uno. La terminación se
-// define por lote, no por categoría.
+// Lo que está terminando, con cuánto viene ganando cada uno. Entran dos cosas:
+//   · los que están en un lote de corral (nombre TERMINACION/CORRAL o potrero CORRAL)
+//   · los marcados con un destino de terminación que todavía no salieron
+// La columna `origen` dice cuál es cada caso: "corral" o "marcado".
 
 function terminacion(db, opciones = {}) {
   const hoy = opciones.hoy || new Date().toISOString().slice(0, 10);
-  const filas = db.prepare(`
+  const enCorral = db.prepare(`
     SELECT a.id, a.rp, a.sexo, a.categoria, a.fecha_nac, a.pelo, a.padre_rp,
-           l.nombre lote, l.potrero, la.fecha_ingreso
+           l.nombre lote, l.potrero, la.fecha_ingreso, 'corral' origen
     FROM lote_animales la
     JOIN lotes l ON l.id = la.lote_id
     JOIN animales a ON a.id = la.animal_id
@@ -277,6 +279,20 @@ function terminacion(db, opciones = {}) {
        OR upper(COALESCE(l.potrero,'')) LIKE '%CORRAL%')
       AND upper(COALESCE(a.estado,'ACTIVO'))='ACTIVO'
     ORDER BY a.rp`).all();
+  let marcados = [];
+  try {
+    marcados = db.prepare(`
+      SELECT a.id, a.rp, a.sexo, a.categoria, a.fecha_nac, a.pelo, a.padre_rp,
+             NULL lote, NULL potrero, d.fecha fecha_ingreso, 'marcado' origen, d.destino, d.motivo
+      FROM destinos d JOIN animales a ON upper(a.rp)=upper(d.animal_rp)
+      WHERE upper(d.destino) LIKE '%TERMINACION%' AND COALESCE(d.concretado,0)=0
+        AND d.temporada=? AND upper(COALESCE(a.estado,'ACTIVO'))='ACTIVO'
+      ORDER BY a.rp`).all(hoy.slice(0, 4));
+  } catch (e) {}
+  const ya = new Set(enCorral.map(f => f.id));
+  const filas = [...enCorral.map(f => ({ ...f, destino: null })), ...marcados.filter(f => !ya.has(f.id))];
+  // Si uno está en corral y además marcado, se muestra el destino igual.
+  for (const f of filas) if (f.origen === "corral") { const m = marcados.find(x => x.id === f.id); if (m) { f.destino = m.destino; f.origen = "corral"; } }
 
   const out = filas.map(f => {
     const pes = db.prepare(`SELECT fecha,peso,contexto FROM pesadas WHERE animal_id=? ORDER BY fecha, id`).all(f.id);
@@ -286,6 +302,7 @@ function terminacion(db, opciones = {}) {
     const destete = [...pes].reverse().find(p => /DESTETE/i.test(p.contexto || ""));
     return {
       rp: f.rp, sexo: f.sexo, categoria: f.categoria, pelo: f.pelo, padre_rp: f.padre_rp,
+      origen: f.origen, destino: f.destino || null,
       lote: f.lote, potrero: f.potrero, fecha_ingreso: f.fecha_ingreso,
       meses: f.fecha_nac ? Math.round(dias(f.fecha_nac, hoy) / 30.44) : null,
       peso_entrada: entrada ? entrada.peso : null,
@@ -306,7 +323,9 @@ function terminacion(db, opciones = {}) {
     filas: out,
     resumen: {
       total: out.length,
-      lotes: [...new Set(out.map(f => f.lote))],
+      en_corral: out.filter(f => f.origen === "corral").length,
+      marcados: out.filter(f => f.origen === "marcado").length,
+      lotes: [...new Set(out.map(f => f.lote).filter(Boolean))],
       peso_prom: prom(num(out.map(f => f.peso_actual))),
       gdp_prom: gdps.length ? r3(gdps.reduce((a, b) => a + b, 0) / gdps.length) : null,
       ganancia_prom: prom(num(out.map(f => f.ganancia))),

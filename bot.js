@@ -207,6 +207,30 @@ const HERRAMIENTAS = [
     }
   },
   {
+    name: "leer_adjunto",
+    description: "Ver más de un archivo que mandó el usuario: las filas siguientes de una planilla (Excel/CSV), " +
+      "otra hoja, o el resto de un texto largo. El id viene en el mensaje: [Adjunto 1: planilla \"x.xlsx\" (id 12…)].",
+    input_schema: { type: "object", properties: {
+      id: { type: "integer" }, hoja: { type: "string", description: "Nombre o número de hoja. Por defecto la primera." },
+      desde_fila: { type: "integer", description: "Desde qué fila (0 = la primera)." }, cuantas: { type: "integer", description: "Cuántas (máximo 300)." } },
+      required: ["id"] }
+  },
+  {
+    name: "importar_adjunto",
+    description: "Carga en la base una planilla que mandó el usuario (Excel, CSV o texto con columnas), con la " +
+      "misma validación que relevar: detecta las columnas por sinónimos (RP, peso, fecha, madre, sexo…), avisa " +
+      "qué RP no existen y qué no cierra. Primero con simular=true y mostrale al usuario qué entendió; " +
+      "después sin simular cuando confirme. Si las columnas no se detectan bien, pasá mapa: {rp: \"Caravana\", peso: \"Kg\"}.",
+    input_schema: { type: "object", properties: {
+      id: { type: "integer" }, hoja: { type: "string" },
+      tipo: { type: "string", enum: ["pesadas", "nacimientos", "sanidad", "mediciones", "notas"], description: "Qué es. Si no viene, se adivina por las columnas." },
+      mapa: { type: "object", description: "campo → nombre de columna en la planilla." },
+      fecha: { type: "string", description: "Fecha por defecto si la planilla no trae." }, contexto: { type: "string", description: "pesadas: CONTROL, DESTETE…" },
+      producto: { type: "string" }, dosis: { type: "string" }, motivo: { type: "string" },
+      simular: { type: "boolean" } },
+      required: ["id"] }
+  },
+  {
     name: "recordar",
     description: "Guarda algo que el usuario te enseña del campo y que va a servir para siempre: cómo llaman " +
       "a un potrero, un criterio de descarte, que tal toro ya no se usa, quién es quién, una corrección " +
@@ -261,6 +285,7 @@ function errorClaro(e) {
 
 function crear(deps) {
   const { plantelMod, animalesMod, destinosMod, exportarMod, relevarMod, guardarTablero } = deps;
+  const adjuntosMod = deps.adjuntosMod || require("./adjuntos.js");
   const CAMPOS = deps.CAMPOS || {};
   const modelo = deps.modelo || process.env.MODELO || "claude-opus-5";
   const esfuerzo = deps.esfuerzo || process.env.ESFUERZO || "high";
@@ -329,6 +354,7 @@ ${esquema(db)}
 QUÉ HERRAMIENTA PARA QUÉ:
 · plantel: estados, eficiencias, bloques, quién falló y por qué. Es lo que ve el tablero: la verdad para esas cosas. No las recalcules con SQL.
 · toros: los reproductores y el desempeño de sus hijos. La pestaña Toros del tablero.
+· La pestaña Terminación del tablero muestra a los que están en un lote de corral y a los marcados con destino terminación (destinar). La recría son los de 6 a 20 meses.
 · ficha: todo de un animal, con su historial campaña por campaña.
 · buscar: cuando un RP no aparece exacto o puede haber dos con el mismo número.
 · consultar: SQL para lo que plantel y ficha no cubren. Un SELECT por vez.
@@ -337,6 +363,12 @@ QUÉ HERRAMIENTA PARA QUÉ:
 · destinar: marcar a dónde va un animal (engorde/terminación, venta, reproductor, queda) o que ya salió. Nunca por SQL.
 · crear_tablero: algo para mirar en pantalla. exportar_archivo: algo para bajar (Excel, CSV, imprimir).
 · recordar: lo que el usuario te enseña del campo y va a servir siempre.
+· leer_adjunto / importar_adjunto: cuando mandan un archivo. Fotos y PDF los ves directo; planillas y textos llegan resumidos con un id.
+
+ARCHIVOS QUE TE MANDAN: primero decí en una línea qué es y qué tiene (una planilla de pesadas con 40 filas, la foto de una libreta con RP y pesos, un informe del veterinario). Después hacé lo que corresponda:
+· Planilla o foto con datos para cargar → relevar o importar_adjunto con simular=true, mostrá qué entendiste y los avisos, y cargá cuando confirmen. En una foto, leé cada renglón con cuidado: un 3 y un 8 se confunden; si dudás de un número, decilo.
+· Un PDF o informe → contá lo que importa para el campo y cruzalo con la base si sirve (un análisis de un toro, una liquidación de venta).
+· Si el archivo no se pudo leer, decí por qué y qué formato mandar.
 
 LO QUE SABÉS DE GANADERÍA y no hace falta que nadie te cargue:
 · La gestación de un bovino son 283 días.
@@ -433,6 +465,10 @@ ${cal.cortes ? `Bloques de la parición en curso: cabeza hasta ${cal.cortes.CABE
         if (!input.destino) throw new Error("Falta el destino");
         return destinosMod.marcarVarios(db, rps, input.destino, op);
       }
+      case "leer_adjunto": return adjuntosMod.leer(db, input);
+      case "importar_adjunto":
+        if (ctx.soloLectura && !input.simular) throw new Error("Esta sesión es de sólo lectura");
+        return adjuntosMod.importar(db, plantelMod, { ...input, usuario: usuario || "bot" });
       case "recordar":
         if (ctx.soloLectura) throw new Error("Esta sesión es de sólo lectura");
         return recordar(db, input, usuario);
@@ -479,6 +515,8 @@ ${cal.cortes ? `Bloques de la parición en curso: cabeza hasta ${cal.cortes.CABE
     if (nombre === "crear_tablero") return { tipo: "tablero", herramienta: nombre, slug: out.slug, url: out.url };
     if (nombre === "exportar_archivo") return { tipo: "archivo", herramienta: nombre, nombre: out.nombre, url: out.url, filas: out.filas };
     if (nombre === "destinar") return { tipo: "escritura", herramienta: nombre, que: out.mensaje || `destinar ${input.accion || "marcar"}`, cambios: (out.hechos || out.resultados || []).length };
+    if (nombre === "leer_adjunto") return { tipo: "consulta", herramienta: nombre, porque: `leer adjunto ${input.id}`, filas: out.mostradas };
+    if (nombre === "importar_adjunto") return { tipo: input.simular ? "consulta" : "escritura", herramienta: nombre, que: `importar ${out.adjunto || input.id}`, cambios: out.bien, porque: out.mensaje };
     if (nombre === "recordar") return { tipo: "memoria", herramienta: nombre, que: out.mensaje };
     return { tipo: "consulta", herramienta: nombre };
   }
@@ -493,6 +531,8 @@ ${cal.cortes ? `Bloques de la parición en curso: cabeza hasta ${cal.cortes.CABE
     if (nombre === "crear_tablero") return `armo el tablero "${input.titulo}"`;
     if (nombre === "exportar_archivo") return `armo el archivo "${input.titulo}"`;
     if (nombre === "destinar") return input.accion === "sacar" ? `le saco el destino a ${(input.rps || []).length} animal(es)` : input.accion === "salida" ? `registro la salida de ${(input.rps || []).length} animal(es)` : `marco ${(input.rps || []).length} animal(es) → ${input.destino}`;
+    if (nombre === "leer_adjunto") return "leo más del archivo";
+    if (nombre === "importar_adjunto") return input.simular ? "reviso la planilla" : "cargo la planilla";
     if (nombre === "recordar") return input.olvidar_id ? "borro una memoria" : "anoto en la memoria";
     return nombre;
   };
@@ -509,7 +549,8 @@ ${cal.cortes ? `Bloques de la parición en curso: cabeza hasta ${cal.cortes.CABE
     const uso = { input: 0, output: 0, cache_read: 0, cache_creation: 0 };
     const historia = [...mensajes];
     const ultimoUsuario = [...historia].reverse().find(m => m.role === "user");
-    const textoUsuario = ultimoUsuario ? (typeof ultimoUsuario.content === "string" ? ultimoUsuario.content : "") : "";
+    const textoUsuario = !ultimoUsuario ? "" : typeof ultimoUsuario.content === "string" ? ultimoUsuario.content
+      : ultimoUsuario.content.map(b => b.type === "text" ? (b.text.startsWith("[Adjunto") ? b.text.split("\n")[0] : b.text) : b.type === "image" ? "[foto]" : b.type === "document" ? "[pdf]" : "").filter(Boolean).join(" ");
 
     const system = [
       { type: "text", text: parteEstable(db, campoNombre), cache_control: { type: "ephemeral" } },

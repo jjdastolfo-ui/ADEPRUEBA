@@ -41,6 +41,10 @@ Abre en http://localhost:3001. Sin clave de API el tablero anda igual; sólo el 
 | `MODELO` | opcional. Por defecto `claude-opus-5`. Para comparar: `claude-sonnet-5`, `claude-fable-5-1` |
 | `ESFUERZO` | opcional. `high` por defecto; `medium` para abaratar, `xhigh`/`max` para exprimir |
 | `TWILIO_SID` / `TWILIO_TOKEN` | sólo si se usa WhatsApp |
+| `RESPALDO_CLAVE` | una clave cualquiera; habilita `/api/respaldo?clave=...` para bajar una copia de la base |
+| `WHATSAPP_PERMITIDOS` | números que pueden hablarle, separados por coma (`5491155551234,5491166665678`). Sin esto, cualquiera |
+| `URL_PUBLICA` | la dirección de la app (`https://tu-app.up.railway.app`), para que los links lleguen bien al teléfono |
+| `WHATSAPP_CAMPOS` | si hay varios campos: JSON número → clave (`{"5491155551234":"videla"}`) |
 
 Node 22 o más nuevo (`engines` en `package.json` lo pide; Railway lo respeta). La
 versión 13 de `better-sqlite3` trae el binario compilado para Node 22 a 25, así
@@ -75,8 +79,8 @@ Cada pestaña tiene su propia regla; un animal puede estar en varias.
 | Plantel | hembras activas que son VACA o VIENTRE, o que ya tienen cría, o que entraron a servicio |
 | Toros | machos activos con categoría TORO. Sus hijos se cuentan por `padre_rp` igual al RP **o al nombre** del toro |
 | Nacimientos | nacidos en el año de parición en curso, con madre cargada |
-| Recría | activos de 6 a 24 meses |
-| Terminación | los que están en un **lote** cuyo nombre contiene TERMINACION o CORRAL (no mira categoría ni destino) |
+| Recría | activos de 6 a 20 meses |
+| Terminación | los que están en un **lote** cuyo nombre contiene TERMINACION o CORRAL, más los marcados con un destino de terminación que todavía no salieron (columna Origen: "en corral" o "marcado") |
 | Destinos | lo marcado en la tabla `destinos` para la temporada actual |
 | No destetaron | las del plantel con estado FALLÓ |
 | Todos | todos los registrados, con filtro por estado |
@@ -139,6 +143,15 @@ recibe la pregunta, piensa, consulta lo que necesita y contesta. Diez herramient
 - `exportar_archivo` — un Excel, CSV o imprimible. Devuelve el link.
 - `recordar` — guarda lo que le enseñás del campo.
 
+**Archivos.** Le podés mandar cualquier cosa, por el chat del tablero (clip,
+arrastrar o pegar) o por WhatsApp: **fotos** (la libreta, la balanza, un
+animal), **PDF** (informes, liquidaciones), **Excel, CSV y TSV** (planillas de
+pesadas, nacimientos, sanidad), **Word y texto**. Fotos y PDF los ve el modelo
+directamente; las planillas las lee, te dice qué contienen y las carga con la
+misma validación que Relevar cuando confirmás (herramientas `leer_adjunto` e
+`importar_adjunto`). Las fotos se achican en el navegador antes de subirse.
+Audio no: la API no transcribe. Los adjuntos quedan guardados (`/api/adjuntos`).
+
 **Memoria.** Lo que le contás ("al potrero 7 le decimos La Loma", "Hércules ya
 no se usa") lo guarda y lo usa en todas las respuestas. Se ve y se edita en la
 pestaña Archivos. Las conversaciones quedan guardadas por sesión del navegador
@@ -169,6 +182,39 @@ Corre las 20 preguntas de `datos/preguntas.js` contra la base de prueba (la
 respuesta correcta se calcula, no se adivina) e imprime cuántas acertó, los
 tokens y el costo aproximado. El informe queda en `datos/evaluaciones/`. Es
 la forma de saber si un cambio de modelo, esfuerzo o prompt mejoró o empeoró.
+
+## Probar con la base real antes de desplegar
+
+1. En Railway, agregá la variable `RESPALDO_CLAVE` (una palabra cualquiera) y redesplegá lo que ya tenés, o hacelo junto con esta versión.
+2. Bajá una copia de la base:
+   ```bash
+   curl -o ~/rodeo/data/principal.db "https://TU-APP.up.railway.app/api/respaldo?clave=LA_CLAVE"
+   ```
+3. Corré el sistema en tu compu con esa copia (`DB_DIR=./data node server.js`) y revisá el tablero, las pestañas y el bot con tus animales de verdad. Nada de lo que hagas acá toca Railway.
+4. Cuando esté bien, subí los archivos al repo. Al arrancar, el servidor agrega solo las tablas y columnas nuevas a la base real, sin tocar los datos.
+
+Si tenés más de un campo, cada uno es un archivo (`/data/<clave>.db`) y se baja con `&campo=<clave>`.
+
+## WhatsApp
+
+El bot atiende por WhatsApp a través de Twilio. Para probarlo alcanza con el
+*sandbox* de Twilio (gratis, sin aprobación de Meta):
+
+1. Cuenta en twilio.com → Messaging → Try it out → **Send a WhatsApp message**.
+2. Desde tu teléfono, mandá al número del sandbox el código que te muestra (`join algo-algo`).
+3. En la pestaña **Sandbox settings**, en "When a message comes in" poné
+   `https://TU-APP.up.railway.app/webhook` (método POST) y guardá.
+4. En Railway, variables: `TWILIO_SID` y `TWILIO_TOKEN` (del panel de Twilio),
+   `WHATSAPP_PERMITIDOS` con tu número, `URL_PUBLICA` con la dirección de la app.
+
+Y ya está: le escribís como al chat del tablero. Recuerda la conversación de
+las últimas 48 horas por número, parte las respuestas largas, manda "Estoy
+mirando la base…" si tarda, y si le mandás una **foto de la libreta** la lee,
+te muestra qué entendió y carga cuando confirmás.
+
+El sandbox pide volver a mandar `join …` cada 72 horas y sólo desde números
+que se unieron. Para producción (número propio, sin códigos) se aprueba un
+remitente de WhatsApp Business en Twilio; el webhook es el mismo.
 
 ## Para verificar que arrancó
 

@@ -23,6 +23,7 @@ const fs = require("fs");
 const app = express();
 app.use(express.json({ limit: "25mb" }));
 app.use(express.urlencoded({ extended: true, limit: "25mb" }));
+app.set("trust proxy", true);   // Railway está detrás de un proxy: así se sabe el https y el host reales
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Headers", "Content-Type");
@@ -40,6 +41,7 @@ const animalesMod = require("./animales.js");   // buscar y ficha de cualquier a
 const exportarMod = require("./exportar.js");   // Excel, CSV, imprimible, archivos del bot
 const relevarMod = require("./relevar.js");     // carga de campo e importación de planillas
 const botMod = require("./bot.js");             // el bot: Claude con la base en la mano
+const adjuntosMod = require("./adjuntos.js");   // fotos, PDF, Excel, CSV, Word que le mandan al bot
 const mods = () => ({ plantelMod, animalesMod, destinosMod });
 
 // ── CAMPOS ───────────────────────────────────────────────────────────────────
@@ -62,6 +64,7 @@ function getDB(key) {
   animalesMod.init(db);
   exportarMod.init(db);
   botMod.init(db);
+  adjuntosMod.init(db);
   bases[k] = db;
   return db;
 }
@@ -117,7 +120,7 @@ function crearTablas(db) {
 // Vive en bot.js. Acá sólo se crea con lo que necesita del servidor.
 // guardarTablero está definido más abajo; como es una declaración de función,
 // ya existe cuando se llega acá.
-const bot = botMod.crear({ plantelMod, animalesMod, destinosMod, exportarMod, relevarMod, guardarTablero, CAMPOS });
+const bot = botMod.crear({ plantelMod, animalesMod, destinosMod, exportarMod, relevarMod, adjuntosMod, guardarTablero, CAMPOS });
 const MODELO = bot.modelo;
 
 // ── TABLEROS QUE ARMA EL BOT ─────────────────────────────────────────────────
@@ -480,24 +483,28 @@ app.get("/api/notas", (req, res) => {
 // sesión (el navegador manda `sesion`); si el cliente manda `historia`, se usa ésa.
 function ctxChat(req) {
   const campoKey = req.query.campo || req.body.campo || CAMPO_DEFAULT;
-  return { campoKey, db: getDB(campoKey), nombre: (CAMPOS[campoKey] || {}).nombre || "el campo",
-    opciones: { campoKey, soloLectura: req.body.solo_lectura, canal: "web", usuario: String(req.body.sesion || "anonimo"),
+  const db = getDB(campoKey);
+  const usuario = String(req.body.sesion || "anonimo");
+  // El mensaje puede traer archivos: se guardan y se convierten en bloques que el modelo lee.
+  const adjuntos = Array.isArray(req.body.adjuntos) ? req.body.adjuntos : [];
+  const prep = adjuntos.length ? adjuntosMod.preparar(db, { texto: req.body.mensaje, adjuntos, canal: "web", usuario }) : { content: req.body.mensaje, guardados: [] };
+  return { campoKey, db, nombre: (CAMPOS[campoKey] || {}).nombre || "el campo", mensaje: prep.content, adjuntos: prep.guardados,
+    opciones: { campoKey, soloLectura: req.body.solo_lectura, canal: "web", usuario,
       historia: Array.isArray(req.body.historia) ? req.body.historia : undefined } };
 }
 app.post("/api/chat", async (req, res) => {
-  const { mensaje } = req.body;
-  if (!mensaje) return res.status(400).json({ error: "Falta el mensaje" });
+  if (!req.body.mensaje && !(Array.isArray(req.body.adjuntos) && req.body.adjuntos.length)) return res.status(400).json({ error: "Falta el mensaje" });
   const c = ctxChat(req);
-  try { res.json(await bot.responder(c.db, c.nombre, mensaje, c.opciones)); }
+  try { res.json({ ...(await bot.responder(c.db, c.nombre, c.mensaje, c.opciones)), adjuntos: c.adjuntos }); }
   catch (e) { res.status(500).json({ error: e.message, respuesta: `No pude procesarlo: ${e.message}` }); }
 });
 
 // Lo mismo, pero contando en vivo qué está haciendo (Server-Sent Events).
 // Eventos: vuelta, pensando {delta}, texto {delta}, paso {texto}, fin {respuesta, pasos, uso}, error.
 app.post("/api/chat/stream", async (req, res) => {
-  const { mensaje } = req.body;
-  if (!mensaje) return res.status(400).json({ error: "Falta el mensaje" });
-  const c = ctxChat(req);
+  if (!req.body.mensaje && !(Array.isArray(req.body.adjuntos) && req.body.adjuntos.length)) return res.status(400).json({ error: "Falta el mensaje" });
+  let c;
+  try { c = ctxChat(req); } catch (e) { return res.status(400).json({ error: e.message }); }
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("X-Accel-Buffering", "no");
@@ -505,8 +512,9 @@ app.post("/api/chat/stream", async (req, res) => {
   const enviar = e => { try { res.write(`data: ${JSON.stringify(e)}\n\n`); } catch (x) {} };
   const latido = setInterval(() => { try { res.write(":\n\n"); } catch (x) {} }, 15000);
   try {
-    const r = await bot.responder(c.db, c.nombre, mensaje, { ...c.opciones, onEvento: e => { if (e.tipo !== "fin") enviar(e); } });
-    enviar({ tipo: "fin", ...r });
+    if (c.adjuntos.length) enviar({ tipo: "adjuntos", adjuntos: c.adjuntos });
+    const r = await bot.responder(c.db, c.nombre, c.mensaje, { ...c.opciones, onEvento: e => { if (e.tipo !== "fin") enviar(e); } });
+    enviar({ tipo: "fin", ...r, adjuntos: c.adjuntos });
   } catch (e) {
     enviar({ tipo: "error", error: e.message, respuesta: `No pude procesarlo: ${e.message}` });
   }
@@ -526,6 +534,16 @@ app.delete("/api/conversacion", (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Los archivos que le mandaron al bot.
+app.get("/api/adjuntos", (req, res) => { try { res.json(adjuntosMod.listar(dbDe(req))); } catch (e) { res.json([]); } });
+app.get("/adjuntos/:id/:nombre?", (req, res) => {
+  const a = adjuntosMod.leerBytes(getDB(req.query.campo || CAMPO_DEFAULT), req.params.id);
+  if (!a) return res.status(404).send("No existe ese adjunto");
+  res.setHeader("Content-Type", a.mime || "application/octet-stream");
+  if (!req.query.ver) res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(a.nombre)}`);
+  res.send(a.bytes);
+});
+
 // Lo que el bot recuerda del campo.
 app.get("/api/memoria", (req, res) => { try { res.json(bot.memorias(dbDe(req))); } catch (e) { res.json([]); } });
 app.post("/api/memoria", (req, res) => {
@@ -537,21 +555,103 @@ app.delete("/api/memoria/:id", (req, res) => {
   catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-// WhatsApp: responde vacío y manda la respuesta después, para no cortar por tiempo.
+// ── WHATSAPP ─────────────────────────────────────────────────────────────────
+// Twilio manda cada mensaje acá. Se responde vacío enseguida (Twilio corta a
+// los 15 segundos) y la respuesta va después por la API de Twilio.
+//
+// Variables: TWILIO_SID, TWILIO_TOKEN · WHATSAPP_PERMITIDOS (números separados
+// por coma; si no está, cualquiera puede hablarle) · URL_PUBLICA (para que los
+// links de archivos y tableros sirvan desde el teléfono; si no está, se deduce
+// del pedido) · WHATSAPP_CAMPOS (JSON número → clave de campo, si hay varios).
+
+const WA_PERMITIDOS = String(process.env.WHATSAPP_PERMITIDOS || "").split(",").map(s => s.replace(/\D/g, "")).filter(Boolean);
+let WA_CAMPOS = {}; try { WA_CAMPOS = JSON.parse(process.env.WHATSAPP_CAMPOS || "{}"); } catch (e) {}
+const soloDigitos = s => String(s || "").replace(/\D/g, "");
+
+function clienteTwilio() {
+  if (!process.env.TWILIO_SID || !process.env.TWILIO_TOKEN) return null;
+  return require("twilio")(process.env.TWILIO_SID, process.env.TWILIO_TOKEN);
+}
+
+// WhatsApp corta en 1600 caracteres: se parte por párrafos, sin cortar palabras.
+function partirMensaje(texto, max = 1500) {
+  const partes = [];
+  let resto = String(texto || "").trim();
+  while (resto.length > max) {
+    let corte = resto.lastIndexOf("\n\n", max);
+    if (corte < max * 0.4) corte = resto.lastIndexOf("\n", max);
+    if (corte < max * 0.4) corte = resto.lastIndexOf(". ", max) + 1;
+    if (corte < max * 0.4) corte = resto.lastIndexOf(" ", max);
+    if (corte <= 0) corte = max;
+    partes.push(resto.slice(0, corte).trim());
+    resto = resto.slice(corte).trim();
+  }
+  if (resto) partes.push(resto);
+  return partes;
+}
+
+// Los links del sistema son relativos (/archivos/3/x.xlsx): desde el teléfono
+// necesitan el dominio.
+function absolutizar(texto, req) {
+  const base = (process.env.URL_PUBLICA || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
+  return String(texto || "").replace(/(^|[\s(])(\/(archivos|t)\/[^\s)]+)/g, `$1${base}$2`);
+}
+
+async function enviarWhatsApp(twilio, from, to, texto) {
+  for (const parte of partirMensaje(texto)) await twilio.messages.create({ from, to, body: parte });
+}
+
+// Lo que llega por WhatsApp (foto, PDF, planilla, audio…) se baja de Twilio.
+async function bajarMedia(url, mimeDeclarado) {
+  const auth = Buffer.from(`${process.env.TWILIO_SID}:${process.env.TWILIO_TOKEN}`).toString("base64");
+  const r = await fetch(url, { headers: { Authorization: `Basic ${auth}` }, redirect: "follow" });
+  if (!r.ok) throw new Error(`No pude bajar el adjunto (${r.status})`);
+  const mime = (r.headers.get("content-type") || mimeDeclarado || "application/octet-stream").split(";")[0];
+  const ext = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "application/pdf": "pdf", "text/csv": "csv", "audio/ogg": "ogg",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx", "application/vnd.ms-excel": "xls",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx", "text/plain": "txt" }[mime] || "bin";
+  return { nombre: `whatsapp_${Date.now()}.${ext}`, mime, buffer: Buffer.from(await r.arrayBuffer()) };
+}
+
 app.post("/webhook", async (req, res) => {
   res.type("text/xml").send("<Response></Response>");
-  const de = req.body.From || "";
-  const texto = req.body.Body || "";
-  if (!texto.trim()) return;
-  const db = getDB(CAMPO_DEFAULT);
+  const de = req.body.From || "", a = req.body.To || "";
+  const texto = String(req.body.Body || "").trim();
+  const nMedia = Number(req.body.NumMedia || 0);
+  if (!texto && !nMedia) return;
+
+  const numero = soloDigitos(de);
+  if (WA_PERMITIDOS.length && !WA_PERMITIDOS.includes(numero)) {
+    console.log(`whatsapp: ${de} no está en WHATSAPP_PERMITIDOS, se ignora`);
+    return;
+  }
+  const campoKey = CAMPOS[WA_CAMPOS[numero]] ? WA_CAMPOS[numero] : CAMPO_DEFAULT;
+  const db = getDB(campoKey);
+  const twilio = clienteTwilio();
+
+  // Si tarda, un aviso para que no parezca que no llegó.
+  let respondido = false;
+  const aviso = setTimeout(() => { if (!respondido && twilio) twilio.messages.create({ from: a, to: de, body: "Estoy mirando la base, un momento…" }).catch(() => {}); }, 9000);
+
   try {
-    const r = await bot.responder(db, CAMPOS[CAMPO_DEFAULT].nombre, texto,
-      { campoKey: CAMPO_DEFAULT, canal: "whatsapp", usuario: de || "desconocido" });
-    if (process.env.TWILIO_SID) {
-      const twilio = require("twilio")(process.env.TWILIO_SID, process.env.TWILIO_TOKEN);
-      await twilio.messages.create({ from: req.body.To, to: de, body: r.respuesta.slice(0, 1500) });
+    let mensaje = texto;
+    if (nMedia) {
+      const adjuntos = [];
+      for (let i = 0; i < Math.min(nMedia, 4); i++) {
+        try { adjuntos.push(await bajarMedia(req.body[`MediaUrl${i}`], req.body[`MediaContentType${i}`])); }
+        catch (e) { adjuntos.push({ nombre: `adjunto${i + 1}.bin`, mime: "application/octet-stream", buffer: Buffer.alloc(0) }); console.error("whatsapp media:", e.message); }
+      }
+      mensaje = adjuntosMod.preparar(db, { texto, adjuntos, canal: "whatsapp", usuario: de }).content;
     }
-  } catch (e) { console.error("webhook:", e.message); }
+    const r = await bot.responder(db, CAMPOS[campoKey].nombre, mensaje, { campoKey, canal: "whatsapp", usuario: de || "desconocido" });
+    respondido = true; clearTimeout(aviso);
+    if (twilio) await enviarWhatsApp(twilio, a, de, absolutizar(r.respuesta, req));
+    else console.log(`whatsapp (sin Twilio configurado) → ${de}: ${r.respuesta.slice(0, 200)}`);
+  } catch (e) {
+    respondido = true; clearTimeout(aviso);
+    console.error("webhook:", e.message);
+    if (twilio) { try { await twilio.messages.create({ from: a, to: de, body: `No pude: ${e.message}` }); } catch (x) {} }
+  }
 });
 
 
@@ -592,6 +692,23 @@ app.post("/api/importar-base", async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// Bajar una copia de la base (respaldo consistente, aunque esté en uso).
+// Protegido con la variable RESPALDO_CLAVE: sin ella, esta ruta no existe.
+//   curl -o principal.db "https://TU-APP.up.railway.app/api/respaldo?clave=LA_CLAVE&campo=principal"
+app.get("/api/respaldo", async (req, res) => {
+  const clave = process.env.RESPALDO_CLAVE;
+  if (!clave) return res.status(404).send("No hay RESPALDO_CLAVE configurada");
+  if (String(req.query.clave || "") !== clave) return res.status(403).send("Clave incorrecta");
+  const k = CAMPOS[req.query.campo] ? req.query.campo : CAMPO_DEFAULT;
+  const tmp = path.join(require("os").tmpdir(), `rodeo-respaldo-${k}-${Date.now()}.db`);
+  try {
+    await getDB(k).backup(tmp);
+    res.setHeader("Content-Type", "application/x-sqlite3");
+    res.setHeader("Content-Disposition", `attachment; filename="${k}_${new Date().toISOString().slice(0, 10)}.db"`);
+    res.sendFile(tmp, () => { try { fs.unlinkSync(tmp); } catch (e) {} });
+  } catch (e) { res.status(500).send(e.message); }
 });
 
 // Qué hay en el volumen.
@@ -644,7 +761,7 @@ app.get("/", (req, res) => {
 });
 
 // Para poder probar las funciones sin levantar el servidor.
-module.exports = { app, getDB, bot, guardarTablero, CAMPOS, CAMPO_DEFAULT };
+module.exports = { app, getDB, bot, guardarTablero, CAMPOS, CAMPO_DEFAULT, partirMensaje, absolutizar };
 
 if (require.main === module) app.listen(PORT, () => {
   console.log(`${VERSION} en el puerto ${PORT} · modelo ${MODELO} · esfuerzo ${bot.esfuerzo}`);

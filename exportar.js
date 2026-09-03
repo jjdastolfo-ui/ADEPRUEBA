@@ -80,7 +80,7 @@ const COLUMNAS = {
     { k: "lote_actual", t: "Lote" }, { k: "potrero", t: "Potrero" }
   ],
   terminacion: [
-    { k: "rp", t: "RP", ancho: 9 }, { k: "lote", t: "Lote" }, { k: "potrero", t: "Potrero" }, { k: "categoria", t: "Categoría" },
+    { k: "rp", t: "RP", ancho: 9 }, { k: "origen", t: "Origen" }, { k: "lote", t: "Lote" }, { k: "potrero", t: "Potrero" }, { k: "destino", t: "Destino" }, { k: "categoria", t: "Categoría" },
     { k: "sexo_texto", t: "Sexo" }, { k: "meses", t: "Edad (m)", tipo: E }, { k: "padre_rp", t: "Padre" },
     { k: "fecha_ingreso", t: "Ingresó", tipo: F }, { k: "dias_corral", t: "Días en corral", tipo: E },
     { k: "destete", t: "Destete", tipo: D }, { k: "peso_entrada", t: "Peso entrada", tipo: D },
@@ -182,12 +182,12 @@ function datos(db, mods, clave, opciones = {}) {
       return { filas, subtitulo: `Nacidos en ${anio} · ${filas.length} terneros` };
     }
     case "recria": {
-      const filas = conSexo(animalesMod.listar(db).filter(a => a.edad_meses != null && a.edad_meses >= 6 && a.edad_meses <= 24));
-      return { filas, subtitulo: `De 6 a 24 meses · ${filas.length} animales` };
+      const filas = conSexo(animalesMod.listar(db).filter(a => a.edad_meses != null && a.edad_meses >= 6 && a.edad_meses <= 20));
+      return { filas, subtitulo: `De 6 a 20 meses · ${filas.length} animales` };
     }
     case "terminacion": {
       const t = animalesMod.terminacion(db);
-      return { filas: conSexo(t.filas), subtitulo: `${t.resumen.total} en corral · ${t.resumen.kg_totales || 0} kg` };
+      return { filas: conSexo(t.filas), subtitulo: `${t.resumen.total} terminando (${t.resumen.en_corral} en corral, ${t.resumen.marcados} marcados) · ${t.resumen.kg_totales || 0} kg` };
     }
     case "destinos": {
       if (!destinosMod) return { filas: [], subtitulo: "" };
