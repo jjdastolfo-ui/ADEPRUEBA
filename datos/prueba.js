@@ -134,6 +134,17 @@ const marcados = db.prepare("SELECT animal_rp, destino FROM destinos WHERE tempo
 ok(dm.hechos.length === 3 && dm.fallados.length === 1, "marca 3 y avisa 1 (ZZZ)");
 ok(marcados.find(m => m.animal_rp === "11").destino === "TERMINACION" && marcados.find(m => m.animal_rp === "B332").destino === "TORO TERMINACION", "vaca → TERMINACION, toro → TORO TERMINACION");
 db.prepare("DELETE FROM destinos WHERE temporada='2099'").run();
+// Terminación: lote de corral + marcados con destino terminación (sin salir).
+const anioHoy = new Date().toISOString().slice(0, 4);
+const antesT = animalesMod.terminacion(db).resumen;
+destinosMod.marcar(db, "15", "engorde", { temporada: anioHoy });
+const t2 = animalesMod.terminacion(db);
+ok(t2.resumen.total === antesT.total + 1 && t2.resumen.marcados === antesT.marcados + 1 && t2.filas.find(f => f.rp === "15").origen === "marcado", "una vaca marcada a engorde aparece en Terminación como marcada");
+destinosMod.concretar(db, "15", { temporada: anioHoy });
+ok(animalesMod.terminacion(db).resumen.total === antesT.total, "cuando sale del campo deja de estar en Terminación");
+db.prepare("UPDATE animales SET estado='ACTIVO' WHERE rp='15'").run();
+db.prepare("DELETE FROM destinos WHERE animal_rp='15'").run();
+ok(exportarMod.conjunto(db, mods, "recria").filas.every(f => f.edad_meses <= 20), "la recría llega hasta los 20 meses");
 
 // ── El bot, con un Claude simulado ───────────────────────────────────────────
 // El cliente falso recibe un guion: una función por llamada, que mira los
@@ -179,7 +190,7 @@ const bot1 = botMod.crear({ plantelMod, animalesMod, destinosMod, exportarMod, r
       return { content: [texto(`Fallaron ${out.total} vacas.`)] };
     }
   ]) });
-ok(bot1.HERRAMIENTAS.map(h => h.name).join() === "plantel,ficha,toros,buscar,consultar,escribir,relevar,crear_tablero,exportar_archivo,destinar,recordar", "las once herramientas, en orden fijo");
+ok(bot1.HERRAMIENTAS.map(h => h.name).join() === "plantel,ficha,toros,buscar,consultar,escribir,relevar,crear_tablero,exportar_archivo,destinar,leer_adjunto,importar_adjunto,recordar", "las trece herramientas, en orden fijo");
 const eventos = [];
 (async () => {
   const r = await bot1.responder(db, "Prueba", "¿cuántas fallaron?", { campoKey: "principal", canal: "web", usuario: "prueba", onEvento: e => eventos.push(e) });
@@ -260,6 +271,39 @@ const eventos = [];
   const inst = bot1.instrucciones(db, "Prueba");
   ok(inst.includes("destinar") && inst.includes("recordar") && inst.includes("HOY ES"), "las instrucciones nombran las herramientas nuevas y la fecha");
   ok(require("./preguntas.js").length >= 18 && require("./preguntas.js").every(p => typeof p.verificar === "function"), "el banco de preguntas carga");
+
+  // WhatsApp: partir mensajes largos y links absolutos; el bot acepta una foto.
+  const largo = Array.from({ length: 40 }, (_, i) => `Párrafo ${i + 1} con algo de texto para que sea largo de verdad.`).join("\n\n");
+  const partes = S.partirMensaje(largo);
+  ok(partes.length >= 2 && partes.every(x => x.length <= 1500) && partes.join("\n\n").replace(/\s+/g, " ") === largo.replace(/\s+/g, " "), "parte un mensaje largo por párrafos sin perder texto");
+  ok(S.absolutizar("Quedó en /archivos/3/x.xlsx y el tablero /t/toros", { protocol: "https", get: () => "app.railway.app" }) === "Quedó en https://app.railway.app/archivos/3/x.xlsx y el tablero https://app.railway.app/t/toros", "los links salen absolutos para el teléfono");
+  const bot7 = botMod.crear({ plantelMod, animalesMod, destinosMod, exportarMod, relevarMod, guardarTablero: S.guardarTablero, CAMPOS: S.CAMPOS,
+    cliente: clienteFalso([(params) => ({ content: [texto(`recibí ${params.messages[params.messages.length - 1].content.length} bloques`)] })]) });
+  const r8 = await bot7.responder(db, "Prueba", [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: "abc" } }, { type: "text", text: "leé la libreta" }], { campoKey: "principal", canal: "whatsapp", usuario: "whatsapp:+549" });
+  ok(r8.respuesta === "recibí 2 bloques" && bot7.conversacion(db, "whatsapp", "whatsapp:+549")[0].texto === "[foto] leé la libreta", "una foto llega al modelo y queda como [foto] en la conversación");
+
+  // Adjuntos: un Excel de pesadas llega resumido, el bot lo importa con la herramienta.
+  const adjuntosMod = require("../adjuntos.js");
+  const xl = xlsx.armar([{ nombre: "Pesadas", titulo: "Control", columnas: [{ k: "rp", t: "RP" }, { k: "peso", t: "Peso" }], filas: [{ rp: "011", peso: 441 }, { rp: "13", peso: 488 }, { rp: "ZZZ", peso: 300 }] }]);
+  const prep = adjuntosMod.preparar(db, { texto: "cargá esto como control de hoy", adjuntos: [{ nombre: "control.xlsx", mime: "application/vnd.ms-excel", base64: xl.toString("base64") }], canal: "web", usuario: "prueba" });
+  ok(prep.guardados.length === 1 && prep.guardados[0].tipo === "tabla" && prep.content.length === 2 && /3 filas/.test(prep.content[0].text) && /011 \| 441/.test(prep.content[0].text), "el Excel llega como tabla resumida con id");
+  const idAdj = prep.guardados[0].id;
+  const bot8 = botMod.crear({ plantelMod, animalesMod, destinosMod, exportarMod, relevarMod, guardarTablero: S.guardarTablero, CAMPOS: S.CAMPOS,
+    cliente: clienteFalso([
+      () => ({ content: [uso("t9", "importar_adjunto", { id: idAdj, tipo: "pesadas", contexto: "CONTROL", simular: true })] }),
+      (params) => ({ content: [texto(JSON.parse(params.messages[params.messages.length - 1].content[0].content).mensaje)] })
+    ]) });
+  const r9 = await bot8.responder(db, "Prueba", prep.content, { campoKey: "principal", canal: "web", usuario: "prueba" });
+  ok(/2 pesadas para cargar, 1 con error/.test(r9.respuesta) && r9.pasos[0].herramienta === "importar_adjunto", "el bot revisa la planilla con importar_adjunto (simular): 2 bien, ZZZ mal");
+  const conv8 = bot8.conversacion(db, "web", "prueba"); const ult = conv8[conv8.length - 2];
+  ok(ult.role === "user" && /^\[Adjunto 1: planilla "control.xlsx"/.test(ult.texto) && /cargá esto/.test(ult.texto), "en la conversación queda el nombre del adjunto, no la planilla entera");
+  const foto = adjuntosMod.preparar(db, { texto: "", adjuntos: [{ nombre: "libreta.jpg", mime: "image/jpeg", base64: Buffer.alloc(10).toString("base64") }], canal: "whatsapp", usuario: "w" });
+  ok(foto.content.some(b => b.type === "image") && /Decime qué es/.test(foto.content[foto.content.length - 1].text), "una foto sin texto lleva la consigna por defecto");
+  const audio = adjuntosMod.preparar(db, { texto: "", adjuntos: [{ nombre: "nota.ogg", mime: "audio/ogg", base64: "AAAA" }] });
+  ok(audio.guardados[0].error && /audios/.test(audio.content[0].text), "un audio avisa que no se escucha");
+  const pdf = adjuntosMod.preparar(db, { texto: "qué dice", adjuntos: [{ nombre: "informe.pdf", mime: "application/pdf", base64: Buffer.from("%PDF-1.4").toString("base64") }] });
+  ok(pdf.content.some(b => b.type === "document" && b.source.media_type === "application/pdf"), "un PDF va como documento");
+  ok(adjuntosMod.listar(db).length >= 4, "los adjuntos quedan listados");
 
   console.log(`\n${n} pruebas, ${fallas} fallas`);
   db.close();
