@@ -17,7 +17,6 @@
 
 const express = require("express");
 const Database = require("better-sqlite3");
-const Anthropic = require("@anthropic-ai/sdk");
 const path = require("path");
 const fs = require("fs");
 
@@ -32,17 +31,15 @@ app.use((req, res, next) => {
   next();
 });
 
-const VERSION = "rodeo-1.1";
+const VERSION = "rodeo-1.2";
 const PORT = process.env.PORT || 3001;
 const DB_DIR = process.env.DB_DIR || "/data";
-const MODELO = process.env.MODELO || "claude-sonnet-4-6";
-
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const plantelMod = require("./plantel.js");
 let destinosMod; try { destinosMod = require("./destinos.js"); } catch (e) { console.log("destinos.js no disponible:", e.message); }
 const animalesMod = require("./animales.js");   // buscar y ficha de cualquier animal
 const exportarMod = require("./exportar.js");   // Excel, CSV, imprimible, archivos del bot
 const relevarMod = require("./relevar.js");     // carga de campo e importación de planillas
+const botMod = require("./bot.js");             // el bot: Claude con la base en la mano
 const mods = () => ({ plantelMod, animalesMod, destinosMod });
 
 // ── CAMPOS ───────────────────────────────────────────────────────────────────
@@ -64,6 +61,7 @@ function getDB(key) {
   if (destinosMod) { try { destinosMod.init(db); } catch (e) {} }
   animalesMod.init(db);
   exportarMod.init(db);
+  botMod.init(db);
   bases[k] = db;
   return db;
 }
@@ -116,329 +114,11 @@ function crearTablas(db) {
 }
 
 // ── EL BOT ───────────────────────────────────────────────────────────────────
-//
-// Claude con dos herramientas: consultar la base y escribir en ella. No hay
-// intenciones precocinadas ni un menú de acciones: entiende lo que le piden y
-// arma la consulta o el cambio que corresponda.
-
-function esquema(db) {
-  const tablas = db.prepare(`SELECT name FROM sqlite_master WHERE type='table'
-    AND name NOT LIKE 'sqlite_%'`).all().map(t => t.name);
-  return tablas.map(t => {
-    const cols = db.prepare(`PRAGMA table_info(${t})`).all()
-      .map(c => `${c.name} ${c.type}`).join(", ");
-    const n = db.prepare(`SELECT COUNT(*) n FROM ${t}`).get().n;
-    return `${t} (${cols}) — ${n} registros`;
-  }).join("\n");
-}
-
-const HERRAMIENTAS = [
-  {
-    name: "consultar",
-    description: "Ejecuta un SELECT sobre la base del campo y devuelve las filas. " +
-      "Usalo para averiguar cualquier cosa antes de responder. Podés llamarlo varias veces " +
-      "si necesitás cruzar datos o verificar algo que no te cierra.",
-    input_schema: {
-      type: "object",
-      properties: {
-        sql: { type: "string", description: "Un SELECT. Sólo lectura." },
-        porque: { type: "string", description: "Qué estás tratando de averiguar con esto." }
-      },
-      required: ["sql"]
-    }
-  },
-  {
-    name: "escribir",
-    description: "Ejecuta un INSERT, UPDATE o DELETE. Usalo sólo cuando te piden cargar o " +
-      "corregir algo, y después de haber verificado con `consultar` que tiene sentido. " +
-      "Contá siempre qué escribiste.",
-    input_schema: {
-      type: "object",
-      properties: {
-        sql: { type: "string", description: "INSERT, UPDATE o DELETE." },
-        params: { type: "array", items: {}, description: "Valores para los ? del SQL." },
-        que: { type: "string", description: "Qué estás cambiando, en una línea." }
-      },
-      required: ["sql", "que"]
-    }
-  },
-  {
-    name: "crear_tablero",
-    description: "Arma una página web propia y la publica en una URL del sistema. Usalo cuando " +
-      "te pidan un tablero, un informe visual, una tabla que se pueda mirar, o cualquier cosa " +
-      "que se vea mejor en pantalla que en texto. Antes de armarlo consultá los datos que va " +
-      "a mostrar, así el HTML sale con los números reales adentro.",
-    input_schema: {
-      type: "object",
-      properties: {
-        slug: { type: "string", description: "Nombre corto para la URL, sin espacios ni acentos. Ej: 'toros-2026'." },
-        titulo: { type: "string", description: "Título que se ve arriba." },
-        contenido: { type: "string", description:
-          "Sólo el contenido: tablas, párrafos, tarjetas de números. NO pongas <html>, <head>, " +
-          "<style> ni <body> — de eso se encarga el sistema, que ya tiene la estética armada. " +
-          "Usá <table> para las tablas, <h2> para los títulos de sección, y para los números " +
-          "de arriba <div class='kpis'><div class='kpi'><b>42</b><span>VIENTRES</span></div></div>. " +
-          "Poné los datos ya calculados adentro, no scripts." },
-        subtitulo: { type: "string", description: "Una línea que aclare qué muestra. Opcional." }
-      },
-      required: ["slug", "titulo", "contenido"]
-    }
-  },
-  {
-    name: "exportar_archivo",
-    description: "Arma un archivo para bajar (Excel, CSV o página imprimible) a partir de un SELECT y " +
-      "devuelve el link. Usalo cuando te pidan 'un excel', 'una planilla', 'un listado para imprimir', " +
-      "'pasame en csv'. Poné nombres de columna legibles con AS: SELECT rp AS \"RP\", peso AS \"Peso kg\". " +
-      "Para los conjuntos que ya existen (plantel, nacimientos, recría, terminación, destinos, pesadas, " +
-      "servicios, sanidad, notas, lotes, animales) no hace falta SQL: pasá el nombre en conjunto.",
-    input_schema: {
-      type: "object",
-      properties: {
-        titulo: { type: "string", description: "Cómo se llama el archivo. Ej: 'Vacías 2026'." },
-        sql: { type: "string", description: "Un SELECT con las filas que van al archivo. Opcional si usás conjunto." },
-        conjunto: { type: "string", description: "plantel | animales | nacimientos | recria | terminacion | destinos | fallos | pesadas | servicios | sanidad | mediciones | notas | lotes | rodeo (todo, una hoja por conjunto)." },
-        rps: { type: "array", items: { type: "string" }, description: "Con conjunto: sólo estos RP." },
-        formato: { type: "string", enum: ["xlsx", "csv", "html"], description: "xlsx por defecto. html es una página para imprimir." },
-        descripcion: { type: "string", description: "Una línea que diga qué tiene." }
-      },
-      required: ["titulo"]
-    }
-  },
-  {
-    name: "relevar",
-    description: "Carga datos de campo con validación: pesadas, sanidad, nacimientos, mediciones o notas, " +
-      "de a muchos. Prefiere esto antes que 'escribir' para esas cosas: verifica que el RP exista " +
-      "(tolera ceros y espacios), avisa si un peso no cierra con la historia, evita duplicados y " +
-      "carga todo junto. Con simular=true sólo muestra qué haría: usalo primero si hay dudas, y " +
-      "contale al usuario los avisos antes de confirmar.",
-    input_schema: {
-      type: "object",
-      properties: {
-        tipo: { type: "string", enum: ["pesadas", "sanidad", "nacimientos", "mediciones", "notas"] },
-        filas: { type: "array", items: { type: "object" }, description:
-          "pesadas: [{rp, peso, fecha?, contexto?}] · nacimientos: [{rp, madre_rp, fecha_nac, sexo, pelo?, peso_nac?, padre_rp?, chip?, observaciones?}] · " +
-          "mediciones: [{rp, valor, tipo?, fecha?}] · notas: [{rp, texto, fecha?}] · sanidad: no usa filas, usa rps/lote_id/todos." },
-        rps: { type: "array", items: { type: "string" }, description: "sanidad: a quiénes." },
-        lote_id: { type: "integer", description: "sanidad: a todo un lote." },
-        todos: { type: "boolean", description: "sanidad: a todos los activos." },
-        fecha: { type: "string", description: "Fecha por defecto (AAAA-MM-DD o DD/MM/AAAA). Hoy si no viene." },
-        contexto: { type: "string", description: "pesadas: NACIMIENTO, DESTETE, ADULTO, CONTROL, RECRIA, CORRAL…" },
-        producto: { type: "string" }, dosis: { type: "string" }, motivo: { type: "string" },
-        tipo_medicion: { type: "string", description: "mediciones: CC, CE, ALTURA, FRAME…" },
-        simular: { type: "boolean", description: "true: sólo mostrar qué haría." }
-      },
-      required: ["tipo"]
-    }
-  }
-];
-
-function correrConsulta(db, sql) {
-  const limpio = String(sql).trim().replace(/;+\s*$/, "");
-  if (!/^select\b/i.test(limpio)) throw new Error("Sólo SELECT en consultar");
-  if (/;/.test(limpio)) throw new Error("Una sola consulta por vez");
-  const filas = db.prepare(limpio).all();
-  // Un resultado enorme no aporta: se recorta y se avisa.
-  if (filas.length > 300) return { filas: filas.slice(0, 300), total: filas.length, recortado: true };
-  return { filas, total: filas.length };
-}
-
-function correrEscritura(db, sql, params) {
-  const limpio = String(sql).trim().replace(/;+\s*$/, "");
-  if (!/^(insert|update|delete)\b/i.test(limpio)) throw new Error("Sólo INSERT, UPDATE o DELETE en escribir");
-  if (/;/.test(limpio)) throw new Error("Una sola sentencia por vez");
-  if (/\bdrop\b|\balter\b|\btruncate\b/i.test(limpio)) throw new Error("No puedo hacer eso");
-  const r = db.prepare(limpio).run(...(params || []));
-  return { cambios: r.changes, id: r.lastInsertRowid };
-}
-
-function instrucciones(db, campoNombre) {
-  const hoy = new Date().toISOString().slice(0, 10);
-  const cal = plantelMod.calendario(db);
-  return `Sos el asistente de ${campoNombre}, una cabaña de Angus. HOY ES ${hoy}.
-
-Tenés acceso directo a la base del campo. Consultá lo que necesites antes de responder: no adivines
-ni respondas de memoria. Si algo no te cierra, consultá otra vez desde otro ángulo.
-
-ESTRUCTURA DE LA BASE:
-${esquema(db)}
-
-EL CALENDARIO DE ESTE CAMPO, sacado de sus propios registros:
-Servicios: ${cal.servicios.map(s => `${s.temporada} (${s.desde} a ${s.hasta}, ${s.n} vientres)`).join(" · ") || "sin datos"}
-Pariciones: ${cal.pariciones.map(p => `${p.anio} (${p.primero} a ${p.ultimo}, ${p.n} terneros)`).join(" · ") || "sin datos"}
-
-LO QUE SABÉS DE GANADERÍA y no hace falta que nadie te cargue:
-· La gestación de un bovino son 283 días.
-· Una vaca desteta un ternero por año. El destete es a los 6-8 meses del parto.
-· Un tacto "PREÑADA" dice que estaba preñada ESE DÍA. Va a parir unos nueve meses y medio
-  después del SERVICIO, no del tacto.
-· Cabeza, cuerpo y cola son tramos de la parición. Cuanto antes pare, más pesado llega el
-  ternero al destete.
-· Lo que mide de verdad a una vaca es cuánto desteta EN RELACIÓN A SU PROPIO PESO: una de
-  430 kg que desteta 255 rinde 59%, mejor que una de 600 que desteta 250 (42%), porque come
-  menos todo el año.
-· De dónde vino una preñez se confirma con la fecha de nacimiento: ±10 días de la fecha
-  probable de la IATF es IATF; después, tramos de 20 días son toro cabeza, cuerpo y cola.
-
-EL ERROR QUE NO PODÉS COMETER: si una vaca figura preñada y no tiene cría registrada, NO
-concluyas que abortó sin mirar CUÁNDO fue el servicio. Si fue hace menos de nueve meses, esa
-vaca simplemente todavía no parió. Es la diferencia entre un problema sanitario y una parición
-que está por empezar.
-
-CÓMO TRABAJAR:
-· Consultá primero, respondé después. Cruzá datos si hace falta.
-· Decí lo que concluís y en qué te basás, con las fechas en la mano.
-· Si los datos no alcanzan para responder, decilo. No inventes.
-· Si encontrás algo que está mal cargado, avisalo aunque no te lo hayan preguntado. Lo típico:
-  una madre que era más joven que su cría, una vaca con dos crías el mismo año, una fecha de
-  nacimiento imposible (1970 suele ser un campo vacío), un peso que no cierra con su historia,
-  o un RP que se repite entre animales distintos.
-· Cuando te pidan cargar o corregir algo, verificá primero que exista y tenga sentido, después
-  escribí, y contá qué hiciste.
-
-ARMAR TABLEROS: si te piden un tablero, un informe visual o una tabla para mirar, usá crear_tablero.
-Consultá los datos primero y ponelos ya calculados adentro.
-
-NO escribas la página entera: mandá sólo el contenido. Los estilos y el encabezado los pone el
-sistema. Usá <table> con <thead>/<tbody>, <h2> para separar secciones, class="n" en las celdas de
-números, class="al" en rojo y class="bi" en verde. Para los números grandes de arriba:
-<div class="kpis"><div class="kpi"><b>42</b><span>VIENTRES</span></div></div>
-
-Después de crearlo, decile en qué URL quedó y qué muestra.
-
-ARCHIVOS PARA BAJAR: si piden un Excel, una planilla, un CSV o algo para imprimir, usá exportar_archivo.
-Devolvé el link tal cual te lo da (empieza con /archivos/). Si lo que piden es una tabla que ya existe
-(el plantel, las pesadas, los nacimientos), pasá el conjunto y no escribas SQL. Para subconjuntos
-("las vacías", "los hijos de Hércules", "las que parieron en cabeza") consultá primero, y después
-mandá los RP en rps o directamente el SELECT con columnas legibles (AS "Peso kg").
-
-CARGAR DATOS DE CAMPO: para pesadas, sanidad, nacimientos, mediciones y notas usá la herramienta
-relevar, no escribir. Entiende "148 312" como RP 148 pesa 312, tolera ceros adelante y avisa si un
-peso no cierra. Si el usuario pega una lista, pasala entera en filas. Si hay avisos importantes
-(un peso que bajó mucho, una madre que ya tiene cría este año), mostráselos y preguntá antes de
-cargar: primero simular=true, después sin simular.
-
-BUSCAR UN ANIMAL: el RP se escribe de cualquier forma — "011", "11", "b 332", "B332" — y todos son el
-mismo. Si no encontrás un RP exacto en SQL, probá quitando ceros adelante o buscando por chip.
-
-DESTINOS: todo animal que sale del plantel va a algún lado, y no todas las salidas son fracasos — el mejor toro de la camada también se va, como reproductor.
-
-Los destinos posibles son:
-· Para vientres: VENTA PREÑADA (se vende servida), TERMINACION (al corral, se vende gorda), VENTA DIRECTA.
-· Para machos: TORO REPRODUCTOR (queda de padre), TORO TERMINACION (no calificó), NOVILLO TERMINACION (a carne).
-· QUEDA: sigue en el plantel.
-
-El motivo es aparte del destino: una vaca puede descartarse por edad y venderse preñada igual. Motivos: NO_DESTETO, VACIA, EDAD, PRODUCTIVIDAD, CARACTER, APLOMOS, UBRE, SANIDAD, SELECCION, COMERCIAL.
-
-Si te piden marcar animales — "las vacías van a terminación", "el S402 queda de reproductor", "la 2077 se vende preñada" — usá la herramienta escribir sobre la tabla destinos, o consultá primero quiénes cumplen la condición y marcá a cada uno. Contá cuántos marcaste y cuáles.
-
-Una vaca vacía no necesariamente va a terminación: si está gorda puede venderse directa. Preguntá si no está claro.
-
-CUANDO TE CORRIGEN: si te dicen que un dato está mal — "la 23 no tiene ternero", "esa vaca no existe",
-"el RP correcto es otro" — no es una pregunta: es una corrección. Verificá qué hay cargado, mostrale
-lo que encontraste, y proponé el cambio concreto antes de hacerlo. Si hay dos animales con el mismo RP,
-decilo claro y preguntá cuál es cuál.
-
-NO TE QUEDES INVESTIGANDO: consultá lo necesario y respondé. Si después de unas consultas no llegás a
-una conclusión, contá qué encontraste y qué te falta. Es mejor una respuesta parcial que ninguna.
-
-CÓMO HABLAR: como un asesor que conoce el campo. Frases cortas, sin listas de más, sin repetir
-la pregunta. Números concretos. Si algo es una estimación, decilo.`;
-}
-
-async function conversar(db, campoNombre, mensajes, opciones = {}) {
-  const pasos = [];
-  let historia = [...mensajes];
-
-  const MAX = 14;
-  for (let vuelta = 0; vuelta < MAX; vuelta++) {
-    // En la última vuelta se le sacan las herramientas: así se ve obligado a
-    // responder con lo que ya averiguó en vez de seguir consultando.
-    const ultima = vuelta === MAX - 1;
-    const r = await anthropic.messages.create({
-      model: MODELO,
-      max_tokens: 8000,
-      system: instrucciones(db, campoNombre) + (ultima
-        ? "\n\nSE TE ACABÓ EL TIEMPO DE CONSULTAR. Respondé ahora con lo que averiguaste. Si te falta algo, decí qué encontraste y qué te falta."
-        : ""),
-      ...(ultima ? {} : { tools: HERRAMIENTAS }),
-      messages: historia
-    });
-
-    const usos = (r.content || []).filter(c => c.type === "tool_use");
-    if (!usos.length) {
-      const texto = (r.content || []).filter(c => c.type === "text").map(c => c.text).join("\n");
-      return { respuesta: texto.trim(), pasos };
-    }
-
-    historia.push({ role: "assistant", content: r.content });
-    const resultados = [];
-    for (const u of usos) {
-      let out;
-      try {
-        if (u.name === "consultar") {
-          out = correrConsulta(db, u.input.sql);
-          pasos.push({ tipo: "consulta", sql: u.input.sql, porque: u.input.porque, filas: out.total });
-        } else if (u.name === "crear_tablero") {
-          if (opciones.soloLectura) throw new Error("Esta sesión es de sólo lectura");
-          out = guardarTablero(db, u.input, opciones.campoKey);
-          pasos.push({ tipo: "tablero", slug: out.slug, url: out.url });
-        } else if (u.name === "escribir") {
-          if (opciones.soloLectura) throw new Error("Esta sesión es de sólo lectura");
-          out = correrEscritura(db, u.input.sql, u.input.params);
-          pasos.push({ tipo: "escritura", que: u.input.que, cambios: out.cambios });
-        } else if (u.name === "exportar_archivo") {
-          out = exportarDesdeBot(db, u.input, opciones);
-          pasos.push({ tipo: "archivo", nombre: out.nombre, url: out.url, filas: out.filas });
-        } else if (u.name === "relevar") {
-          if (opciones.soloLectura) throw new Error("Esta sesión es de sólo lectura");
-          out = relevarDesdeBot(db, u.input);
-          pasos.push({ tipo: u.input.simular ? "consulta" : "escritura", que: `relevar ${u.input.tipo}`, cambios: out.bien, porque: out.mensaje });
-        } else out = { error: "herramienta desconocida" };
-      } catch (e) {
-        out = { error: e.message };
-        pasos.push({ tipo: "error", detalle: e.message });
-      }
-      resultados.push({ type: "tool_result", tool_use_id: u.id, content: JSON.stringify(out) });
-    }
-    historia.push({ role: "user", content: resultados });
-  }
-  // No debería llegar acá, pero si pasa se cuenta qué se averiguó en vez de
-  // dejar al usuario sin nada.
-  const consultas = pasos.filter(p => p.tipo === "consulta");
-  return {
-    respuesta: `Revisé la base ${consultas.length} veces pero no llegué a una conclusión. ` +
-      `Estuve mirando: ${consultas.slice(0, 4).map(c => c.porque || "datos").join("; ")}. ` +
-      `Probá siendo más específico — por ejemplo, nombrando el RP o la temporada.`,
-    pasos };
-}
-
-// El bot pide un archivo: de un conjunto conocido o de un SELECT propio.
-function exportarDesdeBot(db, input, opciones = {}) {
-  const campoNombre = (CAMPOS[opciones.campoKey] || {}).nombre || "";
-  const formato = ["xlsx", "csv", "html"].includes(input.formato) ? input.formato : "xlsx";
-  if (input.conjunto && !input.sql) {
-    const a = exportarMod.armar(db, mods(), String(input.conjunto).toLowerCase(), formato,
-      { rps: input.rps, campoNombre, filtro: input.descripcion });
-    const g = exportarMod.guardarArchivo(db, { nombre: exportarMod.nombreArchivo(input.titulo || a.nombre, formato), mime: a.mime,
-      buffer: a.buffer, descripcion: input.descripcion || input.titulo, creado_por: "bot" });
-    return { ...g, filas: input.rps ? input.rps.length : null, mensaje: `Listo: ${g.url}` };
-  }
-  if (!input.sql) throw new Error("Falta el SELECT o el conjunto");
-  const r = exportarMod.desdeConsulta(db, { sql: input.sql, titulo: input.titulo, formato, descripcion: input.descripcion, creado_por: "bot", campoNombre });
-  return { ...r, mensaje: `Listo: ${r.url} (${r.filas} filas)` };
-}
-
-function relevarDesdeBot(db, input) {
-  const t = String(input.tipo || "").toLowerCase();
-  const filas = Array.isArray(input.filas) ? input.filas : [];
-  if (t === "pesadas") return relevarMod.pesadas(db, { filas, fecha: input.fecha, contexto: input.contexto, simular: input.simular, usuario: "bot" });
-  if (t === "nacimientos") return relevarMod.nacimientos(db, { filas, simular: input.simular, usuario: "bot" });
-  if (t === "mediciones") return relevarMod.mediciones(db, { filas, tipo: input.tipo_medicion, fecha: input.fecha, simular: input.simular });
-  if (t === "notas") return relevarMod.notas(db, plantelMod, { filas, fecha: input.fecha, simular: input.simular, usuario: "bot" });
-  if (t === "sanidad") return relevarMod.sanidad(db, { rps: input.rps, lote_id: input.lote_id, todos: input.todos, fecha: input.fecha,
-    producto: input.producto, dosis: input.dosis, motivo: input.motivo, simular: input.simular });
-  throw new Error(`Tipo "${input.tipo}" no. Puede ser pesadas, sanidad, nacimientos, mediciones o notas`);
-}
+// Vive en bot.js. Acá sólo se crea con lo que necesita del servidor.
+// guardarTablero está definido más abajo; como es una declaración de función,
+// ya existe cuando se llega acá.
+const bot = botMod.crear({ plantelMod, animalesMod, destinosMod, exportarMod, relevarMod, guardarTablero, CAMPOS });
+const MODELO = bot.modelo;
 
 // ── TABLEROS QUE ARMA EL BOT ─────────────────────────────────────────────────
 
@@ -790,21 +470,65 @@ app.get("/api/notas", (req, res) => {
   } catch (e) { res.json([]); }
 });
 
-// El chat. Es Claude con la base en la mano.
-app.post("/api/chat", async (req, res) => {
-  const { mensaje, historia } = req.body;
-  if (!mensaje) return res.status(400).json({ error: "Falta el mensaje" });
+// El chat. Es Claude con la base en la mano. La historia sale de la base por
+// sesión (el navegador manda `sesion`); si el cliente manda `historia`, se usa ésa.
+function ctxChat(req) {
   const campoKey = req.query.campo || req.body.campo || CAMPO_DEFAULT;
-  const db = getDB(campoKey);
-  const nombre = (CAMPOS[campoKey] || {}).nombre || "el campo";
+  return { campoKey, db: getDB(campoKey), nombre: (CAMPOS[campoKey] || {}).nombre || "el campo",
+    opciones: { campoKey, soloLectura: req.body.solo_lectura, canal: "web", usuario: String(req.body.sesion || "anonimo"),
+      historia: Array.isArray(req.body.historia) ? req.body.historia : undefined } };
+}
+app.post("/api/chat", async (req, res) => {
+  const { mensaje } = req.body;
+  if (!mensaje) return res.status(400).json({ error: "Falta el mensaje" });
+  const c = ctxChat(req);
+  try { res.json(await bot.responder(c.db, c.nombre, mensaje, c.opciones)); }
+  catch (e) { res.status(500).json({ error: e.message, respuesta: `No pude procesarlo: ${e.message}` }); }
+});
+
+// Lo mismo, pero contando en vivo qué está haciendo (Server-Sent Events).
+// Eventos: vuelta, pensando {delta}, texto {delta}, paso {texto}, fin {respuesta, pasos, uso}, error.
+app.post("/api/chat/stream", async (req, res) => {
+  const { mensaje } = req.body;
+  if (!mensaje) return res.status(400).json({ error: "Falta el mensaje" });
+  const c = ctxChat(req);
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+  const enviar = e => { try { res.write(`data: ${JSON.stringify(e)}\n\n`); } catch (x) {} };
+  const latido = setInterval(() => { try { res.write(":\n\n"); } catch (x) {} }, 15000);
   try {
-    const msgs = [...(Array.isArray(historia) ? historia : []), { role: "user", content: mensaje }];
-    const r = await conversar(db, nombre, msgs, {
-      soloLectura: req.body.solo_lectura, campoKey });
-    res.json(r);
+    const r = await bot.responder(c.db, c.nombre, mensaje, { ...c.opciones, onEvento: e => { if (e.tipo !== "fin") enviar(e); } });
+    enviar({ tipo: "fin", ...r });
   } catch (e) {
-    res.status(500).json({ error: e.message, respuesta: `No pude procesarlo: ${e.message}` });
+    enviar({ tipo: "error", error: e.message, respuesta: `No pude procesarlo: ${e.message}` });
   }
+  clearInterval(latido);
+  res.end();
+});
+
+// La conversación guardada de una sesión del navegador.
+app.get("/api/conversacion", (req, res) => {
+  try { res.json(bot.conversacion(dbDe(req), "web", String(req.query.sesion || "anonimo"), Number(req.query.limite) || 40)); }
+  catch (e) { res.json([]); }
+});
+app.delete("/api/conversacion", (req, res) => {
+  try {
+    const r = dbDe(req).prepare("DELETE FROM conversaciones WHERE canal='web' AND usuario=?").run(String(req.query.sesion || "anonimo"));
+    res.json({ ok: true, borrados: r.changes });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Lo que el bot recuerda del campo.
+app.get("/api/memoria", (req, res) => { try { res.json(bot.memorias(dbDe(req))); } catch (e) { res.json([]); } });
+app.post("/api/memoria", (req, res) => {
+  try { res.json(bot.recordar(dbDe(req), { texto: req.body.texto, categoria: req.body.categoria }, req.body.usuario || "tablero")); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.delete("/api/memoria/:id", (req, res) => {
+  try { res.json(bot.recordar(dbDe(req), { olvidar_id: Number(req.params.id) })); }
+  catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // WhatsApp: responde vacío y manda la respuesta después, para no cortar por tiempo.
@@ -815,7 +539,8 @@ app.post("/webhook", async (req, res) => {
   if (!texto.trim()) return;
   const db = getDB(CAMPO_DEFAULT);
   try {
-    const r = await conversar(db, CAMPOS[CAMPO_DEFAULT].nombre, [{ role: "user", content: texto }]);
+    const r = await bot.responder(db, CAMPOS[CAMPO_DEFAULT].nombre, texto,
+      { campoKey: CAMPO_DEFAULT, canal: "whatsapp", usuario: de || "desconocido" });
     if (process.env.TWILIO_SID) {
       const twilio = require("twilio")(process.env.TWILIO_SID, process.env.TWILIO_TOKEN);
       await twilio.messages.create({ from: req.body.To, to: de, body: r.respuesta.slice(0, 1500) });
@@ -875,7 +600,7 @@ app.get("/api/volumen", (req, res) => {
 });
 
 app.get("/api/salud", (req, res) => {
-  const out = { version: VERSION, campos: {} };
+  const out = { version: VERSION, modelo: MODELO, esfuerzo: bot.esfuerzo, campos: {} };
   for (const k of Object.keys(CAMPOS)) {
     try {
       const db = getDB(k);
@@ -913,10 +638,10 @@ app.get("/", (req, res) => {
 });
 
 // Para poder probar las funciones sin levantar el servidor.
-module.exports = { app, getDB, conversar, exportarDesdeBot, relevarDesdeBot, HERRAMIENTAS, instrucciones };
+module.exports = { app, getDB, bot, guardarTablero, CAMPOS, CAMPO_DEFAULT };
 
 if (require.main === module) app.listen(PORT, () => {
-  console.log(`${VERSION} en el puerto ${PORT}`);
+  console.log(`${VERSION} en el puerto ${PORT} · modelo ${MODELO} · esfuerzo ${bot.esfuerzo}`);
   for (const k of Object.keys(CAMPOS)) {
     try {
       const db = getDB(k);

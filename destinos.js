@@ -70,12 +70,32 @@ const temporadaDe = f => String(f || new Date().toISOString().slice(0, 10)).slic
  * la decisión puede cambiar — se marca para terminación y al final se vende
  * preñada porque quedó servida.
  */
-function marcar(db, rp, destino, opciones = {}) {
-  const d = String(destino || "").toUpperCase().trim();
-  if (!DESTINOS[d]) return { ok: false, error: `No conozco el destino "${destino}". Los que hay: ${Object.keys(DESTINOS).join(", ")}` };
+// Cómo lo dice la gente → cómo lo guarda el sistema. "Engorde", "gordas", "al
+// corral" y "feedlot" son terminación; para un macho, novillo o toro a terminación.
+function normalizarDestino(texto, esMacho) {
+  const t = String(texto || "").toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[_\-]+/g, " ").replace(/\s+/g, " ").trim();
+  const conTilde = String(texto || "").toUpperCase().trim();
+  if (DESTINOS[conTilde]) return conTilde;
+  if (/PRENAD|SERVID/.test(t)) return "VENTA PREÑADA";
+  if (/REPRODUCTOR|PADRE|SEMENTAL/.test(t)) return "TORO REPRODUCTOR";
+  if (/QUEDA|PLANTEL|SIGUE/.test(t)) return "QUEDA";
+  if (/DIRECTA|COMO ESTA|FERIA|REMATE/.test(t)) return "VENTA DIRECTA";
+  if (/NOVILLO/.test(t)) return "NOVILLO TERMINACION";
+  if (/TORO/.test(t) && /TERMIN|ENGORD|CORRAL|DESCART/.test(t)) return "TORO TERMINACION";
+  if (/TERMIN|ENGORD|GORD|CORRAL|FEEDLOT|INVERN|CARNE|FAEN|FRIGOR/.test(t)) return esMacho ? "NOVILLO TERMINACION" : "TERMINACION";
+  if (/VENT|VEND/.test(t)) return "VENTA DIRECTA";
+  return null;
+}
 
-  const a = db.prepare("SELECT rp, sexo, categoria FROM animales WHERE upper(rp)=upper(?)").get(String(rp).trim());
+function marcar(db, rp, destino, opciones = {}) {
+  const a = db.prepare("SELECT rp, sexo, categoria FROM animales WHERE upper(rp)=upper(?)").get(String(rp).trim())
+    || (() => { try { return require("./animales.js").porRp(db, rp); } catch (e) { return null; } })();
   if (!a) return { ok: false, error: `No encuentro el animal ${rp}` };
+  const esMachoPara = String(a.sexo || "").toUpperCase().startsWith("M");
+  // Un toro que "va a terminación" es TORO TERMINACION, no NOVILLO.
+  let d = normalizarDestino(destino, esMachoPara);
+  if (d === "NOVILLO TERMINACION" && /TORO/i.test(a.categoria || "")) d = "TORO TERMINACION";
+  if (!d) return { ok: false, error: `No conozco el destino "${destino}". Los que hay: ${Object.keys(DESTINOS).join(", ")}` };
 
   // Un destino de macho sobre una hembra casi siempre es un error de tipeo.
   const esMacho = String(a.sexo || "").toUpperCase().startsWith("M");
@@ -206,8 +226,8 @@ Los destinos posibles son:
 
 El motivo es aparte del destino: una vaca puede descartarse por edad y venderse preñada igual. Motivos: NO_DESTETO, VACIA, EDAD, PRODUCTIVIDAD, CARACTER, APLOMOS, UBRE, SANIDAD, SELECCION, COMERCIAL.
 
-Si te piden marcar animales — "las vacías van a terminación", "el S402 queda de reproductor", "la 2077 se vende preñada" — usá la herramienta escribir sobre la tabla destinos, o consultá primero quiénes cumplen la condición y marcá a cada uno. Contá cuántos marcaste y cuáles.
+Si te piden marcar animales — "las vacías van a terminación", "los 5 a engorde", "el S402 queda de reproductor", "la 2077 se vende preñada" — usá la herramienta destinar (NO escribir): entiende sinónimos como engorde, gordas, corral. Si la condición es una lista ("las vacías"), consultá primero quiénes cumplen y mandá todos los RP juntos. Contá cuántos marcaste y cuáles, y si alguno no se pudo, por qué.
 
 Una vaca vacía no necesariamente va a terminación: si está gorda puede venderse directa. Preguntá si no está claro.`;
 
-module.exports = { init, marcar, marcarVarios, sacar, concretar, listar, DESTINOS, MOTIVOS, INSTRUCCIONES };
+module.exports = { init, marcar, marcarVarios, sacar, concretar, listar, normalizarDestino, DESTINOS, MOTIVOS, INSTRUCCIONES };

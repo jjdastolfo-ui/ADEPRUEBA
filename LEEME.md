@@ -8,7 +8,8 @@ datos sin fricción.
 
 | Archivo | Qué hace |
 |---|---|
-| `server.js` | el servidor: rutas, el bot y sus herramientas |
+| `server.js` | el servidor: rutas y conexión de todo |
+| `bot.js` | el bot: Claude con razonamiento extendido, sus herramientas, la memoria y las conversaciones |
 | `plantel.js` | todo lo que se calcula de cada vientre: estado, eficiencia, bloques, ficha reproductiva |
 | `animales.js` | búsqueda de cualquier animal (tolera "011" por "11", "b 332" por "B332"), ficha general, terminación |
 | `exportar.js` | emisión de archivos: Excel, CSV, página imprimible, JSON; archivos que arma el bot |
@@ -16,7 +17,9 @@ datos sin fricción.
 | `xlsx.js` | escribe Excel sin dependencias: encabezado pintado, filtro, panel congelado, números y fechas reales |
 | `destinos.js` | a dónde va cada animal cuando sale del plantel |
 | `public/index.html` | el tablero |
-| `datos/semilla.js` | arma una base de prueba para correr en la compu (`node datos/semilla.js`) |
+| `datos/semilla.js` | arma una base de prueba para correr en la compu (`npm run semilla`) |
+| `datos/prueba.js` | pruebas automáticas de todo, con un Claude simulado (`npm run prueba`) |
+| `datos/preguntas.js` · `datos/evaluar.js` | el banco de preguntas y el corredor que mide al bot de verdad (`npm run evaluar`) |
 
 ## Correr en la compu
 
@@ -35,7 +38,8 @@ Abre en http://localhost:3001. Sin clave de API el tablero anda igual; sólo el 
 | `ANTHROPIC_API_KEY` | la clave de la API |
 | `DB_DIR` | dónde vive la base. En Railway: `/data`, con un volumen montado ahí |
 | `CAMPOS` | JSON con los campos (ver abajo) |
-| `MODELO` | opcional, el modelo de Claude |
+| `MODELO` | opcional. Por defecto `claude-opus-5`. Para comparar: `claude-sonnet-5`, `claude-fable-5-1` |
+| `ESFUERZO` | opcional. `high` por defecto; `medium` para abaratar, `xhigh`/`max` para exprimir |
 | `TWILIO_SID` / `TWILIO_TOKEN` | sólo si se usa WhatsApp |
 
 Node 22 o más nuevo (`engines` en `package.json` lo pide; Railway lo respeta). La
@@ -102,18 +106,51 @@ Rutas: `POST /api/relevar/pesadas|sanidad|nacimientos|mediciones|notas` y
 
 ## El bot
 
-No tiene respuestas armadas ni un menú de acciones. Recibe la pregunta,
-consulta la base las veces que haga falta, y contesta. Tiene cinco herramientas:
+Es Claude Opus 5 con razonamiento extendido (adaptive thinking, esfuerzo alto)
+y la base en la mano. No tiene respuestas armadas ni un menú de acciones:
+recibe la pregunta, piensa, consulta lo que necesita y contesta. Diez herramientas:
 
-- `consultar` — un SELECT.
-- `escribir` — INSERT, UPDATE o DELETE, después de verificar.
+- `plantel` — los vientres con lo que calcula el sistema (estado, eficiencia, bloques). Es lo mismo que ve el tablero, así no lo contradice.
+- `ficha` — todo de un animal, sea vaca, toro o ternero.
+- `buscar` — por RP tolerante, caravana, madre, padre o notas.
+- `consultar` — un SELECT para lo que lo anterior no cubre.
+- `relevar` — pesadas, sanidad, nacimientos, mediciones y notas con validación.
+- `destinar` — a dónde va cada animal (entiende "engorde", "gordas", "corral" → terminación).
+- `escribir` — correcciones puntuales por SQL, después de verificar.
 - `crear_tablero` — una página con tablas, publicada en `/t/:slug`.
-- `exportar_archivo` — un Excel, CSV o imprimible a partir de un conjunto o de un SELECT. Devuelve el link.
-- `relevar` — cargar pesadas, sanidad, nacimientos, mediciones o notas con la misma validación que la pestaña Relevar.
+- `exportar_archivo` — un Excel, CSV o imprimible. Devuelve el link.
+- `recordar` — guarda lo que le enseñás del campo.
+
+**Memoria.** Lo que le contás ("al potrero 7 le decimos La Loma", "Hércules ya
+no se usa") lo guarda y lo usa en todas las respuestas. Se ve y se edita en la
+pestaña Archivos. Las conversaciones quedan guardadas por sesión del navegador
+(al recargar sigue) y por número de WhatsApp (últimas 48 horas).
+
+**En vivo.** El chat muestra qué está haciendo mientras piensa: "miro el
+plantel", "abro la ficha de 23", y la respuesta va apareciendo. Por
+`POST /api/chat/stream` (Server-Sent Events); `POST /api/chat` sigue
+devolviendo todo junto.
+
+**Caché.** El prompt tiene una parte estable (reglas, esquema, memoria) que se
+cachea y una cola volátil (fecha, conteos, calendario). Las llamadas repetidas
+salen mucho más baratas.
 
 Sabe de ganadería sin que nadie le cargue parámetros: la gestación son 283
 días, una vaca desteta un ternero por año, la eficiencia es el destete sobre
 el peso de la madre. El calendario del campo lo deduce de los propios registros.
+
+## Medir al bot
+
+```bash
+ANTHROPIC_API_KEY=sk-... npm run evaluar
+MODELO=claude-sonnet-5 ESFUERZO=medium npm run evaluar   # para comparar
+npm run evaluar -- vacias corral                          # sólo algunas
+```
+
+Corre las 20 preguntas de `datos/preguntas.js` contra la base de prueba (la
+respuesta correcta se calcula, no se adivina) e imprime cuántas acertó, los
+tokens y el costo aproximado. El informe queda en `datos/evaluaciones/`. Es
+la forma de saber si un cambio de modelo, esfuerzo o prompt mejoró o empeoró.
 
 ## Para verificar que arrancó
 
