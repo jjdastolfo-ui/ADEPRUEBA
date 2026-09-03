@@ -1,11 +1,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // RODEO — servidor
 //
-// Dos cosas, nada más:
+// Tres cosas:
 //
 //   1. Un bot que es Claude con acceso real a la base. No responde con textos
 //      armados: consulta, razona y contesta. Si algo no cuadra, lo dice.
 //   2. Los datos para el tablero, con todo lo de cada animal.
+//   3. Entrar y sacar datos sin fricción: buscar cualquier animal como se lo
+//      nombra en la manga, relevar pesadas/sanidad/nacimientos pegando lo que
+//      se anotó, y bajar cualquier tabla como Excel, CSV o página imprimible.
 //
 // Lo que NO hace: calcular estados con reglas fijas y pasárselos masticados al
 // bot. Eso fue lo que falló antes — cada regla nueva tapaba un caso y destapaba
@@ -29,7 +32,7 @@ app.use((req, res, next) => {
   next();
 });
 
-const VERSION = "rodeo-1.0";
+const VERSION = "rodeo-1.1";
 const PORT = process.env.PORT || 3001;
 const DB_DIR = process.env.DB_DIR || "/data";
 const MODELO = process.env.MODELO || "claude-sonnet-4-6";
@@ -37,6 +40,10 @@ const MODELO = process.env.MODELO || "claude-sonnet-4-6";
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const plantelMod = require("./plantel.js");
 let destinosMod; try { destinosMod = require("./destinos.js"); } catch (e) { console.log("destinos.js no disponible:", e.message); }
+const animalesMod = require("./animales.js");   // buscar y ficha de cualquier animal
+const exportarMod = require("./exportar.js");   // Excel, CSV, imprimible, archivos del bot
+const relevarMod = require("./relevar.js");     // carga de campo e importación de planillas
+const mods = () => ({ plantelMod, animalesMod, destinosMod });
 
 // ── CAMPOS ───────────────────────────────────────────────────────────────────
 
@@ -55,6 +62,8 @@ function getDB(key) {
   crearTablas(db);
   plantelMod.init(db);
   if (destinosMod) { try { destinosMod.init(db); } catch (e) {} }
+  animalesMod.init(db);
+  exportarMod.init(db);
   bases[k] = db;
   return db;
 }
@@ -174,6 +183,52 @@ const HERRAMIENTAS = [
       },
       required: ["slug", "titulo", "contenido"]
     }
+  },
+  {
+    name: "exportar_archivo",
+    description: "Arma un archivo para bajar (Excel, CSV o página imprimible) a partir de un SELECT y " +
+      "devuelve el link. Usalo cuando te pidan 'un excel', 'una planilla', 'un listado para imprimir', " +
+      "'pasame en csv'. Poné nombres de columna legibles con AS: SELECT rp AS \"RP\", peso AS \"Peso kg\". " +
+      "Para los conjuntos que ya existen (plantel, nacimientos, recría, terminación, destinos, pesadas, " +
+      "servicios, sanidad, notas, lotes, animales) no hace falta SQL: pasá el nombre en conjunto.",
+    input_schema: {
+      type: "object",
+      properties: {
+        titulo: { type: "string", description: "Cómo se llama el archivo. Ej: 'Vacías 2026'." },
+        sql: { type: "string", description: "Un SELECT con las filas que van al archivo. Opcional si usás conjunto." },
+        conjunto: { type: "string", description: "plantel | animales | nacimientos | recria | terminacion | destinos | fallos | pesadas | servicios | sanidad | mediciones | notas | lotes | rodeo (todo, una hoja por conjunto)." },
+        rps: { type: "array", items: { type: "string" }, description: "Con conjunto: sólo estos RP." },
+        formato: { type: "string", enum: ["xlsx", "csv", "html"], description: "xlsx por defecto. html es una página para imprimir." },
+        descripcion: { type: "string", description: "Una línea que diga qué tiene." }
+      },
+      required: ["titulo"]
+    }
+  },
+  {
+    name: "relevar",
+    description: "Carga datos de campo con validación: pesadas, sanidad, nacimientos, mediciones o notas, " +
+      "de a muchos. Prefiere esto antes que 'escribir' para esas cosas: verifica que el RP exista " +
+      "(tolera ceros y espacios), avisa si un peso no cierra con la historia, evita duplicados y " +
+      "carga todo junto. Con simular=true sólo muestra qué haría: usalo primero si hay dudas, y " +
+      "contale al usuario los avisos antes de confirmar.",
+    input_schema: {
+      type: "object",
+      properties: {
+        tipo: { type: "string", enum: ["pesadas", "sanidad", "nacimientos", "mediciones", "notas"] },
+        filas: { type: "array", items: { type: "object" }, description:
+          "pesadas: [{rp, peso, fecha?, contexto?}] · nacimientos: [{rp, madre_rp, fecha_nac, sexo, pelo?, peso_nac?, padre_rp?, chip?, observaciones?}] · " +
+          "mediciones: [{rp, valor, tipo?, fecha?}] · notas: [{rp, texto, fecha?}] · sanidad: no usa filas, usa rps/lote_id/todos." },
+        rps: { type: "array", items: { type: "string" }, description: "sanidad: a quiénes." },
+        lote_id: { type: "integer", description: "sanidad: a todo un lote." },
+        todos: { type: "boolean", description: "sanidad: a todos los activos." },
+        fecha: { type: "string", description: "Fecha por defecto (AAAA-MM-DD o DD/MM/AAAA). Hoy si no viene." },
+        contexto: { type: "string", description: "pesadas: NACIMIENTO, DESTETE, ADULTO, CONTROL, RECRIA, CORRAL…" },
+        producto: { type: "string" }, dosis: { type: "string" }, motivo: { type: "string" },
+        tipo_medicion: { type: "string", description: "mediciones: CC, CE, ALTURA, FRAME…" },
+        simular: { type: "boolean", description: "true: sólo mostrar qué haría." }
+      },
+      required: ["tipo"]
+    }
   }
 ];
 
@@ -250,6 +305,21 @@ números, class="al" en rojo y class="bi" en verde. Para los números grandes de
 
 Después de crearlo, decile en qué URL quedó y qué muestra.
 
+ARCHIVOS PARA BAJAR: si piden un Excel, una planilla, un CSV o algo para imprimir, usá exportar_archivo.
+Devolvé el link tal cual te lo da (empieza con /archivos/). Si lo que piden es una tabla que ya existe
+(el plantel, las pesadas, los nacimientos), pasá el conjunto y no escribas SQL. Para subconjuntos
+("las vacías", "los hijos de Hércules", "las que parieron en cabeza") consultá primero, y después
+mandá los RP en rps o directamente el SELECT con columnas legibles (AS "Peso kg").
+
+CARGAR DATOS DE CAMPO: para pesadas, sanidad, nacimientos, mediciones y notas usá la herramienta
+relevar, no escribir. Entiende "148 312" como RP 148 pesa 312, tolera ceros adelante y avisa si un
+peso no cierra. Si el usuario pega una lista, pasala entera en filas. Si hay avisos importantes
+(un peso que bajó mucho, una madre que ya tiene cría este año), mostráselos y preguntá antes de
+cargar: primero simular=true, después sin simular.
+
+BUSCAR UN ANIMAL: el RP se escribe de cualquier forma — "011", "11", "b 332", "B332" — y todos son el
+mismo. Si no encontrás un RP exacto en SQL, probá quitando ceros adelante o buscando por chip.
+
 DESTINOS: todo animal que sale del plantel va a algún lado, y no todas las salidas son fracasos — el mejor toro de la camada también se va, como reproductor.
 
 Los destinos posibles son:
@@ -316,6 +386,13 @@ async function conversar(db, campoNombre, mensajes, opciones = {}) {
           if (opciones.soloLectura) throw new Error("Esta sesión es de sólo lectura");
           out = correrEscritura(db, u.input.sql, u.input.params);
           pasos.push({ tipo: "escritura", que: u.input.que, cambios: out.cambios });
+        } else if (u.name === "exportar_archivo") {
+          out = exportarDesdeBot(db, u.input, opciones);
+          pasos.push({ tipo: "archivo", nombre: out.nombre, url: out.url, filas: out.filas });
+        } else if (u.name === "relevar") {
+          if (opciones.soloLectura) throw new Error("Esta sesión es de sólo lectura");
+          out = relevarDesdeBot(db, u.input);
+          pasos.push({ tipo: u.input.simular ? "consulta" : "escritura", que: `relevar ${u.input.tipo}`, cambios: out.bien, porque: out.mensaje });
         } else out = { error: "herramienta desconocida" };
       } catch (e) {
         out = { error: e.message };
@@ -333,6 +410,34 @@ async function conversar(db, campoNombre, mensajes, opciones = {}) {
       `Estuve mirando: ${consultas.slice(0, 4).map(c => c.porque || "datos").join("; ")}. ` +
       `Probá siendo más específico — por ejemplo, nombrando el RP o la temporada.`,
     pasos };
+}
+
+// El bot pide un archivo: de un conjunto conocido o de un SELECT propio.
+function exportarDesdeBot(db, input, opciones = {}) {
+  const campoNombre = (CAMPOS[opciones.campoKey] || {}).nombre || "";
+  const formato = ["xlsx", "csv", "html"].includes(input.formato) ? input.formato : "xlsx";
+  if (input.conjunto && !input.sql) {
+    const a = exportarMod.armar(db, mods(), String(input.conjunto).toLowerCase(), formato,
+      { rps: input.rps, campoNombre, filtro: input.descripcion });
+    const g = exportarMod.guardarArchivo(db, { nombre: exportarMod.nombreArchivo(input.titulo || a.nombre, formato), mime: a.mime,
+      buffer: a.buffer, descripcion: input.descripcion || input.titulo, creado_por: "bot" });
+    return { ...g, filas: input.rps ? input.rps.length : null, mensaje: `Listo: ${g.url}` };
+  }
+  if (!input.sql) throw new Error("Falta el SELECT o el conjunto");
+  const r = exportarMod.desdeConsulta(db, { sql: input.sql, titulo: input.titulo, formato, descripcion: input.descripcion, creado_por: "bot", campoNombre });
+  return { ...r, mensaje: `Listo: ${r.url} (${r.filas} filas)` };
+}
+
+function relevarDesdeBot(db, input) {
+  const t = String(input.tipo || "").toLowerCase();
+  const filas = Array.isArray(input.filas) ? input.filas : [];
+  if (t === "pesadas") return relevarMod.pesadas(db, { filas, fecha: input.fecha, contexto: input.contexto, simular: input.simular, usuario: "bot" });
+  if (t === "nacimientos") return relevarMod.nacimientos(db, { filas, simular: input.simular, usuario: "bot" });
+  if (t === "mediciones") return relevarMod.mediciones(db, { filas, tipo: input.tipo_medicion, fecha: input.fecha, simular: input.simular });
+  if (t === "notas") return relevarMod.notas(db, plantelMod, { filas, fecha: input.fecha, simular: input.simular, usuario: "bot" });
+  if (t === "sanidad") return relevarMod.sanidad(db, { rps: input.rps, lote_id: input.lote_id, todos: input.todos, fecha: input.fecha,
+    producto: input.producto, dosis: input.dosis, motivo: input.motivo, simular: input.simular });
+  throw new Error(`Tipo "${input.tipo}" no. Puede ser pesadas, sanidad, nacimientos, mediciones o notas`);
 }
 
 // ── TABLEROS QUE ARMA EL BOT ─────────────────────────────────────────────────
@@ -402,6 +507,25 @@ function guardarTablero(db, t, campoKey) {
     mensaje: `Quedó en /t/${slug}` };
 }
 
+// Las tablas de un tablero del bot, como Excel o CSV.
+app.get("/t/:slug.:formato(xlsx|csv)", (req, res) => {
+  const db = getDB(req.query.campo || CAMPO_DEFAULT);
+  try {
+    const t = db.prepare("SELECT titulo, html FROM tableros WHERE slug=?").get(req.params.slug);
+    if (!t) return res.status(404).json({ error: "No existe ese tablero" });
+    const tablas = exportarMod.tablasDeHtml(t.html);
+    if (!tablas.length) return res.status(404).json({ error: "Ese tablero no tiene tablas para exportar" });
+    if (req.params.formato === "csv") {
+      const tb = tablas[Number(req.query.tabla) || 0];
+      return enviarArchivo(res, { buffer: Buffer.from(exportarMod.csv(tb.columnas, tb.filas), "utf8"), mime: "text/csv; charset=utf-8",
+        nombre: exportarMod.nombreArchivo(t.titulo, "csv") });
+    }
+    const xlsx = require("./xlsx.js");
+    enviarArchivo(res, { buffer: xlsx.armar(tablas.map(tb => ({ ...tb, titulo: t.titulo, subtitulo: tb.nombre }))), mime: xlsx.MIME,
+      nombre: exportarMod.nombreArchivo(t.titulo, "xlsx") });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Un tablero armado por el bot.
 app.get("/t/:slug", (req, res) => {
   const db = getDB(req.query.campo || CAMPO_DEFAULT);
@@ -448,32 +572,29 @@ app.get("/api/plantel", (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// La ficha: lo reproductivo si es vientre, y lo general (pesadas, sanidad,
+// lotes, hijos, notas) para cualquier animal. Tolera "011" por "11".
 app.get("/api/ficha/:rp", (req, res) => {
-  try {
-    const f = plantelMod.ficha(dbDe(req), req.params.rp);
-    res.status(f.ok ? 200 : 404).json(f);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Todos los animales, para las otras vistas del tablero.
-app.get("/api/animales", (req, res) => {
   const db = dbDe(req);
   try {
-    res.json(db.prepare(`
-      SELECT a.*,
-        (SELECT peso FROM pesadas p WHERE p.animal_id=a.id AND upper(COALESCE(p.contexto,''))='NACIMIENTO'
-         ORDER BY p.fecha LIMIT 1) peso_nac,
-        (SELECT peso FROM pesadas p WHERE p.animal_id=a.id AND upper(COALESCE(p.contexto,''))='DESTETE'
-         ORDER BY p.fecha DESC LIMIT 1) destete,
-        (SELECT peso FROM pesadas p WHERE p.animal_id=a.id ORDER BY p.fecha DESC LIMIT 1) peso_actual,
-        (SELECT fecha FROM pesadas p WHERE p.animal_id=a.id ORDER BY p.fecha DESC LIMIT 1) ultima_pesada,
-        (SELECT COUNT(*) FROM animales h WHERE upper(COALESCE(h.madre_rp,''))=upper(a.rp)) crias
-      FROM animales a
-      WHERE upper(COALESCE(a.estado,'ACTIVO')) = ?
-      ORDER BY a.rp`).all(String(req.query.estado || "ACTIVO").toUpperCase()));
+    const general = animalesMod.ficha(db, req.params.rp);
+    if (!general.ok) return res.status(404).json(general);
+    const vientre = general.es_vientre ? plantelMod.ficha(db, general.rp) : { ok: false };
+    res.json(vientre.ok ? { ...general, ...vientre, general: true, vientre: true } : { ...general, vientre: false });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Buscar como se nombra en la manga: RP, caravana, HBA, madre, padre o texto de notas.
+app.get("/api/buscar", (req, res) => {
+  try { res.json(animalesMod.buscar(dbDe(req), req.query.q, { limite: Number(req.query.limite) || 30 })); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Todos los animales, para las otras vistas del tablero. ?estado=TODOS trae también muertos y vendidos.
+app.get("/api/animales", (req, res) => {
+  try { res.json(animalesMod.listar(dbDe(req), { estado: req.query.estado || "ACTIVO" })); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // Los lotes con sus animales. La terminación se define por lote, no por
 // categoría: un toro en el corral está terminando, el mismo en el potrero no.
@@ -505,61 +626,112 @@ app.get("/api/lote/:id/animales", (req, res) => {
 
 // Todo lo que está en corral, con cuánto viene ganando cada uno.
 app.get("/api/terminacion", (req, res) => {
-  const db = dbDe(req);
-  const hoy = new Date().toISOString().slice(0, 10);
-  try {
-    const filas = db.prepare(`
-      SELECT a.id, a.rp, a.sexo, a.categoria, a.fecha_nac, a.pelo, a.padre_rp,
-             l.nombre lote, l.potrero, la.fecha_ingreso
-      FROM lote_animales la
-      JOIN lotes l ON l.id = la.lote_id
-      JOIN animales a ON a.id = la.animal_id
-      WHERE upper(l.nombre) LIKE '%TERMINACION%' OR upper(l.nombre) LIKE '%CORRAL%'
-         OR upper(COALESCE(l.potrero,'')) LIKE '%CORRAL%'
-      ORDER BY a.rp`).all();
-
-    const dias = (a, b) => (a && b) ? Math.round((new Date(b) - new Date(a)) / 86400000) : null;
-    const out = filas.map(f => {
-      const pes = db.prepare(`SELECT fecha,peso FROM pesadas WHERE animal_id=? ORDER BY fecha`).all(f.id);
-      const ult = pes[pes.length - 1] || null;
-      // Peso al entrar al corral: la pesada más cercana al ingreso.
-      const entrada = f.fecha_ingreso
-        ? pes.filter(p => p.fecha <= f.fecha_ingreso).pop() || pes[0] : pes[0];
-      const d = (entrada && ult && entrada.fecha !== ult.fecha) ? dias(entrada.fecha, ult.fecha) : null;
-      const gdp = (d && d > 0) ? Math.round(((ult.peso - entrada.peso) / d) * 1000) / 1000 : null;
-      return {
-        rp: f.rp, sexo: f.sexo, categoria: f.categoria, pelo: f.pelo, padre_rp: f.padre_rp,
-        lote: f.lote, potrero: f.potrero, fecha_ingreso: f.fecha_ingreso,
-        meses: f.fecha_nac ? Math.round(dias(f.fecha_nac, hoy) / 30.44) : null,
-        peso_entrada: entrada ? entrada.peso : null,
-        peso_actual: ult ? ult.peso : null,
-        ultima_pesada: ult ? ult.fecha : null,
-        dias_corral: f.fecha_ingreso ? dias(f.fecha_ingreso, hoy) : null,
-        ganancia: (entrada && ult) ? Math.round((ult.peso - entrada.peso) * 10) / 10 : null,
-        gdp, destete: f.destete,
-        dias_sin_pesar: ult ? dias(ult.fecha, hoy) : null
-      };
-    });
-
-    const num = a => a.filter(x => x != null && isFinite(x));
-    const prom = a => a.length ? Math.round((a.reduce((x, y) => x + y, 0) / a.length) * 10) / 10 : null;
-    const gdps = num(out.map(f => f.gdp));
-    res.json({
-      filas: out,
-      resumen: {
-        total: out.length,
-        lotes: [...new Set(out.map(f => f.lote))],
-        peso_prom: prom(num(out.map(f => f.peso_actual))),
-        gdp_prom: gdps.length ? Math.round(prom(gdps) * 1000) / 1000 : null,
-        ganancia_prom: prom(num(out.map(f => f.ganancia))),
-        dias_prom: prom(num(out.map(f => f.dias_corral))),
-        kg_totales: Math.round(num(out.map(f => f.peso_actual)).reduce((a, b) => a + b, 0)),
-        sin_pesar: out.filter(f => f.dias_sin_pesar > 30).length
-      }
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  try { res.json(animalesMod.terminacion(dbDe(req))); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── EXPORTAR ─────────────────────────────────────────────────────────────────
+// Cualquier conjunto, en cualquier formato. GET para lo simple; POST cuando el
+// tablero manda qué RP y qué columnas están a la vista.
+
+function enviarArchivo(res, a) {
+  res.setHeader("Content-Type", a.mime);
+  if (!a.inline) res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(a.nombre)}`);
+  res.send(a.buffer);
+}
+function opcionesExport(req) {
+  const b = req.body || {}, q = req.query || {};
+  const campoKey = q.campo || b.campo || CAMPO_DEFAULT;
+  const rps = b.rps || (q.rps ? String(q.rps).split(",") : null);
+  const columnas = b.columnas || (q.columnas ? String(q.columnas).split(",") : null);
+  return { campoNombre: (CAMPOS[campoKey] || {}).nombre || "", rps, columnas, filtro: b.filtro || q.filtro,
+    orden: b.orden || (q.orden ? { col: q.orden, desc: q.desc === "1" } : null), anio: q.anio || b.anio,
+    estado: q.estado || b.estado, temporada: q.temporada || b.temporada, sep: q.sep || b.sep,
+    volver: "/" + (campoKey !== CAMPO_DEFAULT ? `?campo=${campoKey}` : "") };
+}
+app.get("/api/exportar/:conjunto.:formato", (req, res) => {
+  try { enviarArchivo(res, exportarMod.armar(dbDe(req), mods(), req.params.conjunto, req.params.formato, opcionesExport(req))); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post("/api/exportar", (req, res) => {
+  try { enviarArchivo(res, exportarMod.armar(dbDe(req), mods(), req.body.conjunto, req.body.formato || "xlsx", opcionesExport(req))); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+// Qué conjuntos y columnas hay, para armar menús sin hardcodearlos en el tablero.
+app.get("/api/exportar", (req, res) => {
+  res.json({ formatos: Object.keys(exportarMod.FORMATOS),
+    conjuntos: Object.entries(exportarMod.NOMBRES).map(([clave, nombre]) => ({ clave, nombre, columnas: exportarMod.COLUMNAS[clave].map(c => ({ k: c.k, t: c.t })) })) });
+});
+
+// Archivos guardados (los que arma el bot o el relevamiento).
+app.get("/api/archivos", (req, res) => {
+  try { res.json(exportarMod.listarArchivos(dbDe(req))); } catch (e) { res.json([]); }
+});
+app.get("/archivos/:id/:nombre?", (req, res) => {
+  const db = getDB(req.query.campo || CAMPO_DEFAULT);
+  const a = exportarMod.leerArchivo(db, Number(req.params.id));
+  if (!a) return res.status(404).send("No existe ese archivo");
+  enviarArchivo(res, { buffer: a.bytes, mime: a.mime, nombre: a.nombre, inline: /html/.test(a.mime) && req.query.ver === "1" });
+});
+app.delete("/api/archivos/:id", (req, res) => {
+  try { res.json(exportarMod.borrarArchivo(dbDe(req), Number(req.params.id))); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── RELEVAR ──────────────────────────────────────────────────────────────────
+// Carga de campo. Cada ruta acepta simular:true para ver qué haría.
+
+app.post("/api/relevar/pesadas", (req, res) => {
+  try {
+    const filas = req.body.texto ? relevarMod.parsearLineas(req.body.texto).map(l => ({ rp: l.rp, peso: l.valor, fecha: l.extra[0] })) : req.body.filas;
+    res.json(relevarMod.pesadas(dbDe(req), { ...req.body, filas }));
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post("/api/relevar/sanidad", (req, res) => {
+  try {
+    const rps = req.body.texto ? relevarMod.parsearLineas(req.body.texto).map(l => l.rp) : req.body.rps;
+    res.json(relevarMod.sanidad(dbDe(req), { ...req.body, rps }));
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post("/api/relevar/nacimientos", (req, res) => {
+  try { res.json(relevarMod.nacimientos(dbDe(req), req.body)); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post("/api/relevar/mediciones", (req, res) => {
+  try {
+    const filas = req.body.texto ? relevarMod.parsearLineas(req.body.texto).map(l => ({ rp: l.rp, valor: l.valor })) : req.body.filas;
+    res.json(relevarMod.mediciones(dbDe(req), { ...req.body, filas }));
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post("/api/relevar/notas", (req, res) => {
+  try {
+    const filas = req.body.texto ? relevarMod.parsearLineas(req.body.texto).map(l => ({ rp: l.rp, texto: [l.valor, ...l.extra].filter(Boolean).join(" ") })) : req.body.filas;
+    res.json(relevarMod.notas(dbDe(req), plantelMod, { ...req.body, filas }));
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+// Un CSV pegado o subido: { texto, tipo?, mapa?, simular? }
+app.post("/api/importar/csv", (req, res) => {
+  try { res.json(relevarMod.importarCsv(dbDe(req), plantelMod, req.body)); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+// La planilla para llevar al campo. ?lote_id= | ?rps=a,b | ?conjunto=recria · &formato=html para imprimir
+app.get("/api/planilla", (req, res) => {
+  try {
+    const campoKey = req.query.campo || CAMPO_DEFAULT;
+    enviarArchivo(res, relevarMod.planilla(dbDe(req), {
+      lote_id: req.query.lote_id ? Number(req.query.lote_id) : null,
+      rps: req.query.rps ? String(req.query.rps).split(",") : null,
+      conjunto: req.query.conjunto, columnas: req.query.columnas ? String(req.query.columnas).split(",") : null,
+      titulo: req.query.titulo, formato: req.query.formato, campoNombre: (CAMPOS[campoKey] || {}).nombre
+    }, exportarMod, mods()));
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post("/api/planilla", (req, res) => {
+  try {
+    const campoKey = req.query.campo || req.body.campo || CAMPO_DEFAULT;
+    enviarArchivo(res, relevarMod.planilla(dbDe(req), { ...req.body, campoNombre: (CAMPOS[campoKey] || {}).nombre }, exportarMod, mods()));
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
 
 // ── DESTINOS ─────────────────────────────────────────────────────────────────
 // A dónde va cada animal cuando sale del plantel. No todas las salidas son
@@ -710,7 +882,9 @@ app.get("/api/salud", (req, res) => {
       out.campos[k] = {
         nombre: CAMPOS[k].nombre,
         animales: db.prepare("SELECT COUNT(*) n FROM animales").get().n,
-        vientres: plantelMod.plantel(db).filas.length
+        vientres: plantelMod.plantel(db).filas.length,
+        pesadas: db.prepare("SELECT COUNT(*) n FROM pesadas").get().n,
+        archivos: db.prepare("SELECT COUNT(*) n FROM archivos").get().n
       };
     } catch (e) { out.campos[k] = { error: e.message }; }
   }
@@ -738,7 +912,10 @@ app.get("/", (req, res) => {
     </ul></body></html>`);
 });
 
-app.listen(PORT, () => {
+// Para poder probar las funciones sin levantar el servidor.
+module.exports = { app, getDB, conversar, exportarDesdeBot, relevarDesdeBot, HERRAMIENTAS, instrucciones };
+
+if (require.main === module) app.listen(PORT, () => {
   console.log(`${VERSION} en el puerto ${PORT}`);
   for (const k of Object.keys(CAMPOS)) {
     try {
