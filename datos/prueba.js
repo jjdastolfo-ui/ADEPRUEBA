@@ -4,8 +4,10 @@
 //   npm run prueba
 //
 // Arma la base de semilla en una carpeta temporal (no toca ./data ni /data),
-// y ejercita búsqueda, fichas, exportación, relevamiento, importación de CSV
-// y las herramientas del bot. Si termina sin "FALLÓ", está todo bien.
+// y ejercita búsqueda, fichas, exportación, relevamiento, importación de CSV,
+// destinos, y el bot con un Claude simulado (así se prueba el circuito de
+// herramientas, la memoria, el streaming y el caché sin gastar un token).
+// Para probar al bot de verdad: npm run evaluar.
 // ─────────────────────────────────────────────────────────────────────────────
 const path = require("path");
 const fs = require("fs");
@@ -20,7 +22,7 @@ execFileSync(process.execPath, [path.join(__dirname, "semilla.js")], { env: { ..
 const S = require("../server.js");
 const db = S.getDB("principal");
 const plantelMod = require("../plantel.js"), animalesMod = require("../animales.js"), destinosMod = require("../destinos.js");
-const exportarMod = require("../exportar.js"), relevarMod = require("../relevar.js"), xlsx = require("../xlsx.js");
+const exportarMod = require("../exportar.js"), relevarMod = require("../relevar.js"), xlsx = require("../xlsx.js"), botMod = require("../bot.js");
 const mods = { plantelMod, animalesMod, destinosMod };
 
 let fallas = 0, n = 0;
@@ -36,7 +38,7 @@ ok(animalesMod.buscar(db, "renga").length === 1, "busca en las notas de campo");
 ok(animalesMod.porRp(db, " 011 ").rp === "11", "porRp tolera ceros y espacios");
 
 seccion("Fichas");
-const f1 = S.app ? require("../animales.js").ficha(db, "11") : null;
+const f1 = animalesMod.ficha(db, "11");
 ok(f1.ok && f1.es_vientre && f1.pesadas.length >= 2, "ficha general de una vaca");
 const ternero = animalesMod.listar(db).find(a => a.categoria === "TERNERO");
 const f2 = animalesMod.ficha(db, ternero.rp);
@@ -69,7 +71,6 @@ seccion("Excel");
 const buf = xlsx.armar([{ nombre: "H", columnas: [{ k: "a", t: "A" }, { k: "f", t: "F" }], filas: [{ a: 1.5, f: "2026-01-02" }, { a: null, f: null }] }]);
 ok(buf.slice(0, 2).toString() === "PK", "xlsx es un zip");
 const zlib = require("zlib");
-// El primer archivo del zip es [Content_Types].xml: se descomprime para ver que sea XML.
 const largoNombre = buf.readUInt16LE(26), largoComp = buf.readUInt32LE(18);
 const xml = zlib.inflateRawSync(buf.slice(30 + largoNombre, 30 + largoNombre + largoComp)).toString();
 ok(xml.startsWith("<?xml"), "el contenido del zip es XML");
@@ -110,20 +111,146 @@ ok(pl.buffer.length > 2000, "planilla de relevamiento en Excel");
 const plh = relevarMod.planilla(db, { conjunto: "recria", formato: "html" }, exportarMod, mods);
 ok(plh.buffer.toString().includes("Observaciones"), "planilla imprimible con las columnas para anotar");
 
-seccion("Herramientas del bot");
-ok(S.HERRAMIENTAS.map(h => h.name).join() === "consultar,escribir,crear_tablero,exportar_archivo,relevar", "las cinco herramientas");
-const inst = S.instrucciones(db, "Prueba");
-ok(inst.includes("exportar_archivo") && inst.includes("relevar"), "las instrucciones explican las nuevas");
-const e1 = S.exportarDesdeBot(db, { titulo: "Vacías", conjunto: "fallos" }, { campoKey: "principal" });
-ok(e1.url.startsWith("/archivos/"), "el bot exporta un conjunto");
-const e2 = S.exportarDesdeBot(db, { titulo: "Toros", sql: "SELECT rp FROM animales WHERE categoria='TORO'", formato: "csv" }, { campoKey: "principal" });
-ok(e2.filas === 6, "el bot exporta un SELECT");
-const r1 = S.relevarDesdeBot(db, { tipo: "pesadas", filas: [{ rp: "011", peso: 440 }], simular: true });
-ok(r1.bien === 1, "el bot releva pesadas");
-error = null; try { S.relevarDesdeBot(db, { tipo: "otra" }); } catch (e) { error = e.message; }
-ok(/no\. Puede ser/.test(error), "tipo inválido avisa");
+seccion("Destinos");
+ok(destinosMod.normalizarDestino("engorde", false) === "TERMINACION", "'engorde' es TERMINACION para una vaca");
+ok(destinosMod.normalizarDestino("a engorde", true) === "NOVILLO TERMINACION", "'engorde' es NOVILLO TERMINACION para un macho");
+ok(destinosMod.normalizarDestino("venta preñada", false) === "VENTA PREÑADA", "'venta preñada' tal cual");
+ok(destinosMod.normalizarDestino("reproductor", true) === "TORO REPRODUCTOR", "'reproductor'");
+ok(destinosMod.normalizarDestino("cualquier cosa", false) === null, "lo desconocido no se adivina");
+const dm = destinosMod.marcarVarios(db, ["011", "13", "B332", "ZZZ"], "engorde", { motivo: "VACIA", temporada: "2099" });
+const marcados = db.prepare("SELECT animal_rp, destino FROM destinos WHERE temporada='2099' ORDER BY animal_rp").all();
+ok(dm.hechos.length === 3 && dm.fallados.length === 1, "marca 3 y avisa 1 (ZZZ)");
+ok(marcados.find(m => m.animal_rp === "11").destino === "TERMINACION" && marcados.find(m => m.animal_rp === "B332").destino === "TORO TERMINACION", "vaca → TERMINACION, toro → TORO TERMINACION");
+db.prepare("DELETE FROM destinos WHERE temporada='2099'").run();
 
-console.log(`\n${n} pruebas, ${fallas} fallas`);
-db.close();
-fs.rmSync(dir, { recursive: true, force: true });
-process.exit(fallas ? 1 : 0);
+// ── El bot, con un Claude simulado ───────────────────────────────────────────
+// El cliente falso recibe un guion: una función por llamada, que mira los
+// parámetros y devuelve el contenido del mensaje. Emite los eventos que emite
+// el SDK ("text", "streamEvent") y resuelve finalMessage().
+let _ultimosParams = null;
+const clienteFalsoParams = () => _ultimosParams;
+function clienteFalso(guion) {
+  const llamadas = [];
+  return {
+    llamadas,
+    messages: {
+      stream(params) {
+        llamadas.push(params); _ultimosParams = params;
+        const paso = guion[Math.min(llamadas.length - 1, guion.length - 1)](params, llamadas.length);
+        const handlers = {};
+        const st = {
+          on(ev, fn) { handlers[ev] = fn; return st; },
+          async finalMessage() {
+            for (const c of paso.content) {
+              if (c.type === "thinking" && handlers.streamEvent) handlers.streamEvent({ type: "content_block_delta", delta: { type: "thinking_delta", thinking: c.thinking } });
+              if (c.type === "text" && handlers.text) handlers.text(c.text);
+            }
+            return { content: paso.content, stop_reason: paso.stop_reason || (paso.content.some(c => c.type === "tool_use") ? "tool_use" : "end_turn"),
+              usage: { input_tokens: 1000, output_tokens: 50, cache_read_input_tokens: llamadas.length > 1 ? 900 : 0, cache_creation_input_tokens: llamadas.length > 1 ? 0 : 900 } };
+          }
+        };
+        return st;
+      }
+    }
+  };
+}
+const uso = (id, name, input) => ({ type: "tool_use", id, name, input });
+const texto = t => ({ type: "text", text: t });
+
+seccion("El bot (simulado)");
+const bot1 = botMod.crear({ plantelMod, animalesMod, destinosMod, exportarMod, relevarMod, guardarTablero: S.guardarTablero, CAMPOS: S.CAMPOS,
+  cliente: clienteFalso([
+    () => ({ content: [{ type: "thinking", thinking: "Miro el plantel." }, uso("t1", "plantel", { estado: "FALLÓ" })] }),
+    (params) => {
+      const ultimo = params.messages[params.messages.length - 1];
+      const out = JSON.parse(ultimo.content[0].content);
+      return { content: [texto(`Fallaron ${out.total} vacas.`)] };
+    }
+  ]) });
+ok(bot1.HERRAMIENTAS.map(h => h.name).join() === "plantel,ficha,buscar,consultar,escribir,relevar,crear_tablero,exportar_archivo,destinar,recordar", "las diez herramientas, en orden fijo");
+const eventos = [];
+(async () => {
+  const r = await bot1.responder(db, "Prueba", "¿cuántas fallaron?", { campoKey: "principal", canal: "web", usuario: "prueba", onEvento: e => eventos.push(e) });
+  const esperado = plantelMod.plantel(db).resumen.fallaron;
+  ok(r.respuesta === `Fallaron ${esperado} vacas.`, "la respuesta usa el resultado de la herramienta plantel");
+  ok(r.pasos.length === 1 && r.pasos[0].tipo === "consulta" && r.pasos[0].herramienta === "plantel" && r.pasos[0].filas === esperado, "el paso queda registrado");
+  ok(eventos.some(e => e.tipo === "pensando") && eventos.some(e => e.tipo === "paso") && eventos.some(e => e.tipo === "texto") && eventos[eventos.length - 1].tipo === "fin", "emite pensando, paso, texto y fin");
+  ok(r.uso.cache_read === 900 && r.uso.cache_creation === 900, "cuenta los tokens de caché");
+  const conv = bot1.conversacion(db, "web", "prueba");
+  ok(conv.length === 2 && conv[0].role === "user" && conv[1].role === "assistant", "la conversación queda guardada");
+
+  // Segunda pregunta en la misma sesión: la historia sale de la base.
+  const bot2 = botMod.crear({ plantelMod, animalesMod, destinosMod, exportarMod, relevarMod, guardarTablero: S.guardarTablero, CAMPOS: S.CAMPOS,
+    cliente: clienteFalso([(params) => ({ content: [texto(`Tengo ${params.messages.length} mensajes de historia.`)] })]) });
+  const r2 = await bot2.responder(db, "Prueba", "¿y las preñadas?", { campoKey: "principal", canal: "web", usuario: "prueba" });
+  ok(r2.respuesta === "Tengo 3 mensajes de historia.", "la segunda pregunta lleva la historia de la base (2 previos + 1)");
+
+  // Caché: la parte estable no cambia entre llamadas ni lleva la fecha; la volátil sí.
+  const est1 = bot2.parteEstable(db, "Prueba"), est2 = bot2.parteEstable(db, "Prueba");
+  ok(est1 === est2 && !est1.includes(new Date().toISOString().slice(0, 10)), "la parte estable es idéntica entre llamadas y no tiene la fecha");
+  ok(bot2.parteVolatil(db).includes(new Date().toISOString().slice(0, 10)), "la fecha va en la parte volátil");
+  // Los parámetros de la llamada: modelo, thinking adaptativo, esfuerzo, caché en el system.
+  const params = clienteFalsoParams();
+  ok(params.thinking.type === "adaptive" && params.output_config.effort === bot2.esfuerzo && params.system[0].cache_control.type === "ephemeral", "manda thinking adaptativo, esfuerzo y cache_control");
+  ok(params.model === bot2.modelo && bot2.modelo === (process.env.MODELO || "claude-opus-5"), "usa el modelo configurado (Opus 5 por defecto)");
+
+  // Memoria: el bot guarda y después lo lee en el prompt.
+  const bot3 = botMod.crear({ plantelMod, animalesMod, destinosMod, exportarMod, relevarMod, guardarTablero: S.guardarTablero, CAMPOS: S.CAMPOS,
+    cliente: clienteFalso([
+      () => ({ content: [uso("t2", "recordar", { texto: "Al potrero 7 le dicen La Loma", categoria: "campo" })] }),
+      () => ({ content: [texto("Anotado.")] })
+    ]) });
+  const r3 = await bot3.responder(db, "Prueba", "acordate que al potrero 7 le decimos La Loma", { campoKey: "principal", canal: "web", usuario: "prueba" });
+  ok(r3.pasos.some(p => p.tipo === "memoria") && bot3.memorias(db).some(m => /La Loma/.test(m.texto)), "recordar guarda la memoria");
+  ok(bot3.parteEstable(db, "Prueba").includes("La Loma"), "la memoria entra en el prompt");
+  const idMem = bot3.memorias(db)[0].id;
+  bot3.recordar(db, { olvidar_id: idMem });
+  ok(!bot3.memorias(db).length, "olvidar la saca");
+
+  // Destinar por el bot: "los 5 a engorde".
+  const bot4 = botMod.crear({ plantelMod, animalesMod, destinosMod, exportarMod, relevarMod, guardarTablero: S.guardarTablero, CAMPOS: S.CAMPOS,
+    cliente: clienteFalso([
+      () => ({ content: [uso("t3", "destinar", { rps: ["011", "13", "15", "17", "19"], destino: "engorde", motivo: "VACIA" })] }),
+      (params) => ({ content: [texto(JSON.parse(params.messages[params.messages.length - 1].content[0].content).mensaje)] })
+    ]) });
+  const r4 = await bot4.responder(db, "Prueba", "poné los 5 en destino engorde", { campoKey: "principal", canal: "web", usuario: "prueba" });
+  const anio = new Date().toISOString().slice(0, 4);
+  const dest = db.prepare("SELECT animal_rp, destino FROM destinos WHERE temporada=? ORDER BY animal_rp").all(anio);
+  ok(dest.length === 5 && dest.every(d => d.destino === "TERMINACION"), "destinar marca los 5 como TERMINACION");
+  ok(r4.pasos[0].tipo === "escritura" && /5 animales a ENGORDE/i.test(r4.respuesta), "cuenta como escritura y responde cuántos marcó");
+  const lista = destinosMod.listar(db, plantelMod.plantel(db).filas);
+  ok(lista.filas.length === 5 && lista.resumen.marcados === 5, "la pestaña Destinos los ve");
+  db.prepare("DELETE FROM destinos WHERE temporada=?").run(anio);
+
+  // Sólo lectura y errores de herramienta.
+  const bot5 = botMod.crear({ plantelMod, animalesMod, destinosMod, exportarMod, relevarMod, guardarTablero: S.guardarTablero, CAMPOS: S.CAMPOS,
+    cliente: clienteFalso([
+      () => ({ content: [uso("t4", "escribir", { sql: "DELETE FROM animales", que: "borrar todo" })] }),
+      (params) => ({ content: [texto(JSON.parse(params.messages[params.messages.length - 1].content[0].content).error)] })
+    ]) });
+  const r5 = await bot5.responder(db, "Prueba", "borrá todo", { campoKey: "principal", soloLectura: true });
+  ok(/sólo lectura/.test(r5.respuesta) && r5.pasos[0].tipo === "error", "en sólo lectura no escribe y el error vuelve al modelo");
+  ok(db.prepare("SELECT COUNT(*) n FROM animales").get().n > 200, "no borró nada");
+
+  // Refusal.
+  const bot6 = botMod.crear({ plantelMod, animalesMod, destinosMod, exportarMod, relevarMod, guardarTablero: S.guardarTablero, CAMPOS: S.CAMPOS,
+    cliente: clienteFalso([() => ({ content: [], stop_reason: "refusal" })]) });
+  const r6 = await bot6.responder(db, "Prueba", "x", { campoKey: "principal" });
+  ok(r6.motivo === "refusal" && r6.respuesta.length > 0, "un refusal devuelve un mensaje, no rompe");
+
+  // Herramientas viejas del bot siguen andando.
+  const e1 = bot1.exportarDesdeBot(db, { titulo: "Vacías", conjunto: "fallos" }, { campoKey: "principal" });
+  ok(e1.url.startsWith("/archivos/"), "el bot exporta un conjunto");
+  const e2 = bot1.exportarDesdeBot(db, { titulo: "Toros", sql: "SELECT rp FROM animales WHERE categoria='TORO'", formato: "csv" }, { campoKey: "principal" });
+  ok(e2.filas === 6, "el bot exporta un SELECT");
+  const r7 = bot1.relevarDesdeBot(db, { tipo: "pesadas", filas: [{ rp: "011", peso: 440 }], simular: true });
+  ok(r7.bien === 1, "el bot releva pesadas");
+  const inst = bot1.instrucciones(db, "Prueba");
+  ok(inst.includes("destinar") && inst.includes("recordar") && inst.includes("HOY ES"), "las instrucciones nombran las herramientas nuevas y la fecha");
+  ok(require("./preguntas.js").length >= 18 && require("./preguntas.js").every(p => typeof p.verificar === "function"), "el banco de preguntas carga");
+
+  console.log(`\n${n} pruebas, ${fallas} fallas`);
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+  process.exit(fallas ? 1 : 0);
+})().catch(e => { console.error("ERROR en las pruebas:", e); process.exit(1); });
