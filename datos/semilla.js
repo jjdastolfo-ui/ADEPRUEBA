@@ -154,6 +154,18 @@ for (const v of vientres) {
   }
 }
 
+// Terneros de esta semana: llegaron con caravana control y todavía no tienen RP.
+db.exec("ALTER TABLE animales ADD COLUMN caravana_control TEXT; ALTER TABLE animales ADD COLUMN caravana_color TEXT; ALTER TABLE animales ADD COLUMN rp_provisorio INTEGER DEFAULT 0");
+const madresLibres = vientres.filter(v => !db.prepare("SELECT 1 FROM animales WHERE madre_rp=? AND fecha_nac LIKE '2026%'").get(v.rp)).slice(0, 5);
+madresLibres.forEach((m, i) => {
+  const control = String(entre(100, 999)), color = elegir(["BLANCA", "VERDE", "AMARILLA"]);
+  const fecha = sumar(HOY, -entre(0, 6)), sexo = i % 2 ? "H" : "M";
+  const id = insA.run({ rp: "C" + control, chip: null, sexo, categoria: sexo === "M" ? "TERNERO" : "TERNERA", estado: "ACTIVO", fecha_nac: fecha, pelo: elegir(PELOS),
+    madre_rp: m.rp, padre_rp: elegir(TOROS).nombre, hbu: null, nombre: null }).lastInsertRowid;
+  db.prepare("UPDATE animales SET caravana_control=?, caravana_color=?, rp_provisorio=1 WHERE id=?").run(control, color, id);
+  insP.run(id, fecha, r1(26 + rnd() * 10), "NACIMIENTO");
+});
+
 // Lotes: corral de terminación con novillos y toros que no calificaron.
 const corral = db.prepare("INSERT INTO lotes (nombre,potrero,descripcion) VALUES (?,?,?)")
   .run("TERMINACION 2026", "CORRAL 2", "Novillos y toros a terminar").lastInsertRowid;
