@@ -76,12 +76,12 @@ Cada pestaña tiene su propia regla; un animal puede estar en varias.
 
 | Pestaña | Quién aparece |
 |---|---|
-| Plantel | hembras activas que son VACA o VIENTRE, o que ya tienen cría, o que entraron a servicio |
-| Toros | machos activos con categoría TORO. Sus hijos se cuentan por `padre_rp` igual al RP **o al nombre** del toro |
+| Plantel | hembras activas que son VACA o VIENTRE, o que ya tienen cría, o que entraron a servicio, **sin destino de salida marcado** |
+| Toros | machos activos con categoría TORO, **sin destino de salida marcado**. Sus hijos se cuentan por `padre_rp` igual al RP **o al nombre** del toro |
 | Nacimientos | nacidos en el año de parición en curso, con madre cargada |
 | Recría | activos de 6 a 20 meses |
 | Terminación | los que están en un **lote** cuyo nombre contiene TERMINACION o CORRAL, más los marcados con un destino de terminación que todavía no salieron (columna Origen: "en corral" o "marcado") |
-| Destinos | lo marcado en la tabla `destinos` para la temporada actual |
+| Destinos | lo marcado en la tabla `destinos` para la temporada actual. Un destino de salida (venta directa, venta preñada, terminación) saca al animal de Plantel y Toros desde que se decide; QUEDA y TORO REPRODUCTOR no. Registrar la salida lo pasa a VENDIDO; sacarle el destino lo devuelve |
 | No destetaron | las del plantel con estado FALLÓ |
 | Todos | todos los registrados, con filtro por estado |
 

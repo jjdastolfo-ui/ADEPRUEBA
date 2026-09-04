@@ -191,8 +191,9 @@ function datos(db, mods, clave, opciones = {}) {
     }
     case "destinos": {
       if (!destinosMod) return { filas: [], subtitulo: "" };
-      const p = plantelMod.plantel(db);
-      const d = destinosMod.listar(db, p.filas, { temporada: opciones.temporada });
+      const toros = animalesMod.toros(db, { incluirDestinados: true }).filas.map(t => ({ rp: t.rp, categoria: t.categoria, pelo: t.pelo, edad_meses: t.edad_meses, peso_adulto: t.peso_actual, partos: t.hijos, destete_prom: t.destete_prom_hijos, estado: t.estado }));
+      const p = plantelMod.plantel(db, { incluirDestinados: true });
+      const d = destinosMod.listar(db, [...p.filas, ...toros], { temporada: opciones.temporada });
       return { filas: d.filas.map(f => ({ ...f, concretado_texto: f.concretado ? "sí" : "pendiente" })),
         subtitulo: `Temporada ${d.resumen.temporada} · ${d.resumen.marcados} marcados` };
     }

@@ -63,7 +63,8 @@ const HERRAMIENTAS = [
         orden: { type: "string", description: "Campo para ordenar: eficiencia, destete_prom, ipp, edad_meses, peso_adulto, partos…" },
         desc: { type: "boolean", description: "De mayor a menor." },
         limite: { type: "integer", description: "Máximo de filas (por defecto 120)." },
-        solo_resumen: { type: "boolean", description: "true: sólo el resumen, sin filas." }
+        solo_resumen: { type: "boolean", description: "true: sólo el resumen, sin filas." },
+        incluir_destinados: { type: "boolean", description: "true: incluir también a las que tienen destino de salida marcado (por defecto no cuentan como plantel)." }
       }
     }
   },
@@ -84,7 +85,8 @@ const HERRAMIENTAS = [
       "padre_rp coincide con el RP o con el nombre del toro.",
     input_schema: { type: "object", properties: {
       estado: { type: "string", description: "ACTIVO (default) o TODOS." },
-      anio: { type: "string", description: "Año para contar los hijos del año. Por defecto el actual." } } }
+      anio: { type: "string", description: "Año para contar los hijos del año. Por defecto el actual." },
+      incluir_destinados: { type: "boolean", description: "true: también los toros con destino de salida marcado." } } }
   },
   {
     name: "buscar",
@@ -422,7 +424,7 @@ ${cal.cortes ? `Bloques de la parición en curso: cabeza hasta ${cal.cortes.CABE
     const usuario = ctx.usuario || null;
     switch (nombre) {
       case "plantel": {
-        const p = plantelMod.plantel(db, { anio: input.anio });
+        const p = plantelMod.plantel(db, { anio: input.anio, incluirDestinados: !!input.incluir_destinados });
         let filas = p.filas;
         if (input.estado) filas = filas.filter(f => f.estado === String(input.estado).toUpperCase());
         if (input.causa) filas = filas.filter(f => f.causa === String(input.causa).toUpperCase());
@@ -441,7 +443,7 @@ ${cal.cortes ? `Bloques de la parición en curso: cabeza hasta ${cal.cortes.CABE
         // Recortes para no inflar el contexto: lo reciente y lo relevante.
         return { ...f, pesadas: (f.pesadas || []).slice(-24), sanidad: (f.sanidad || []).slice(0, 12), mediciones: (f.mediciones || []).slice(0, 12), _id: undefined, _crias: undefined, _servicios: undefined };
       }
-      case "toros": return animalesMod.toros(db, { estado: input.estado, anio: input.anio });
+      case "toros": return animalesMod.toros(db, { estado: input.estado, anio: input.anio, incluirDestinados: !!input.incluir_destinados });
       case "buscar": return { resultados: animalesMod.buscar(db, input.q, { limite: 20 }) };
       case "consultar": return correrConsulta(db, input.sql);
       case "escribir":

@@ -9,7 +9,7 @@
 //
 //   VENTA PREÑADA          se va como vientre, el valor está en la preñez
 //   TERMINACION            al corral, se vende gorda
-//   VENTA DIRECTA          se vende como está
+//   VENTA DIRECTA          se vende como está (vientre o toro)
 //   TORO REPRODUCTOR       lo mejor de la camada
 //   TORO TERMINACION       no calificó para reproductor
 //   NOVILLO TERMINACION    a carne
@@ -21,7 +21,7 @@
 const DESTINOS = {
   "VENTA PREÑADA":       { grupo: "vientre", positivo: null,  texto: "se vende preñada" },
   "TERMINACION":         { grupo: "vientre", positivo: false, texto: "al corral, se vende gorda" },
-  "VENTA DIRECTA":       { grupo: "vientre", positivo: null,  texto: "se vende como está" },
+  "VENTA DIRECTA":       { grupo: "ambos",   positivo: null,  texto: "se vende como está" },
   "TORO REPRODUCTOR":    { grupo: "macho",   positivo: true,  texto: "queda de padre" },
   "TORO TERMINACION":    { grupo: "macho",   positivo: false, texto: "no calificó, al corral" },
   "NOVILLO TERMINACION": { grupo: "macho",   positivo: false, texto: "a carne" },
@@ -64,6 +64,19 @@ function init(db) {
 }
 
 const temporadaDe = f => String(f || new Date().toISOString().slice(0, 10)).slice(0, 4);
+
+// Un destino de salida es todo lo que no sea quedarse: el animal deja de
+// contar en Plantel y Toros desde que se decide, aunque todavía esté en el
+// campo. QUEDA y TORO REPRODUCTOR no sacan a nadie.
+const SALE = d => !!DESTINOS[d] && !["QUEDA", "TORO REPRODUCTOR"].includes(d);
+
+/** RP (en mayúsculas) de los que tienen un destino de salida sin concretar, de cualquier temporada. */
+function destinadosASalir(db) {
+  try {
+    return new Set(db.prepare("SELECT animal_rp, destino FROM destinos WHERE COALESCE(concretado,0)=0").all()
+      .filter(d => SALE(String(d.destino || "").toUpperCase())).map(d => String(d.animal_rp).toUpperCase()));
+  } catch (e) { return new Set(); }
+}
 
 /**
  * Marca a dónde va un animal. Si ya tenía destino esta temporada, lo reemplaza:
@@ -220,14 +233,17 @@ function listar(db, plantel, opciones = {}) {
 const INSTRUCCIONES = `DESTINOS: todo animal que sale del plantel va a algún lado, y no todas las salidas son fracasos — el mejor toro de la camada también se va, como reproductor.
 
 Los destinos posibles son:
-· Para vientres: VENTA PREÑADA (se vende servida), TERMINACION (al corral, se vende gorda), VENTA DIRECTA.
+· Para vientres: VENTA PREÑADA (se vende servida), TERMINACION (al corral, se vende gorda).
 · Para machos: TORO REPRODUCTOR (queda de padre), TORO TERMINACION (no calificó), NOVILLO TERMINACION (a carne).
+· Para cualquiera: VENTA DIRECTA (se vende como está; un toro que se vende a otra cabaña, una vaca que sale a feria).
 · QUEDA: sigue en el plantel.
 
 El motivo es aparte del destino: una vaca puede descartarse por edad y venderse preñada igual. Motivos: NO_DESTETO, VACIA, EDAD, PRODUCTIVIDAD, CARACTER, APLOMOS, UBRE, SANIDAD, SELECCION, COMERCIAL.
 
 Si te piden marcar animales — "las vacías van a terminación", "los 5 a engorde", "el S402 queda de reproductor", "la 2077 se vende preñada" — usá la herramienta destinar (NO escribir): entiende sinónimos como engorde, gordas, corral. Si la condición es una lista ("las vacías"), consultá primero quiénes cumplen y mandá todos los RP juntos. Contá cuántos marcaste y cuáles, y si alguno no se pudo, por qué.
 
-Una vaca vacía no necesariamente va a terminación: si está gorda puede venderse directa. Preguntá si no está claro.`;
+Una vaca vacía no necesariamente va a terminación: si está gorda puede venderse directa. Preguntá si no está claro.
 
-module.exports = { init, marcar, marcarVarios, sacar, concretar, listar, normalizarDestino, DESTINOS, MOTIVOS, INSTRUCCIONES };
+Desde que un animal tiene un destino de salida (venta o terminación) deja de contar en el plantel y en los toros, aunque siga en el campo: aparece en Destinos y en Terminación. Cuando efectivamente se va, registrá la salida (destinar con accion salida) y pasa a VENDIDO. Si lo marcaron por error, sacar el destino lo devuelve al plantel.`;
+
+module.exports = { init, marcar, marcarVarios, sacar, concretar, listar, normalizarDestino, destinadosASalir, SALE, DESTINOS, MOTIVOS, INSTRUCCIONES };

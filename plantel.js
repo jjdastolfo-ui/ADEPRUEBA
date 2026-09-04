@@ -160,8 +160,17 @@ function plantel(db, opciones = {}) {
       )
     ORDER BY a.rp`).all();
 
-  const filas = vientres.map(v => armarVientre(db, v, { hoy, anioParicion, cortes: cal.cortes }));
+  // Las que ya tienen decidida la salida (venta, terminación) no son plantel:
+  // están en Destinos hasta que se van. Se pueden pedir igual con incluirDestinados.
+  let salen = new Set();
+  try { salen = require("./destinos.js").destinadosASalir(db); } catch (e) {}
+  const destinadas = vientres.filter(v => salen.has(String(v.rp).toUpperCase())).length;
+  const quedan = opciones.incluirDestinados ? vientres : vientres.filter(v => !salen.has(String(v.rp).toUpperCase()));
+
+  const filas = quedan.map(v => armarVientre(db, v, { hoy, anioParicion, cortes: cal.cortes }));
   const resumen = resumir(filas, anioParicion);
+  resumen.destinadas = destinadas;
+  if (destinadas && !opciones.incluirDestinados) resumen.avisos.push({ n: destinadas, texto: "con destino de salida marcado: no se cuentan acá, están en Destinos" });
 
   // Los internos sólo se devuelven si alguien los pide: engordan la respuesta.
   const salida = opciones.completo ? filas : filas.map(({ _id, _crias, _servicios, ...f }) => f);

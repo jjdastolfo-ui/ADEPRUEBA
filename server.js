@@ -423,14 +423,23 @@ app.post("/api/planilla", (req, res) => {
 });
 
 // ── DESTINOS ─────────────────────────────────────────────────────────────────
+// Para mostrar cada destino con los datos del animal: las vacas con lo que
+// calcula el plantel, los toros con lo suyo (peso, hijos, edad).
+function filasParaDestinos(db) {
+  const vacas = plantelMod.plantel(db, { incluirDestinados: true }).filas;
+  const toros = animalesMod.toros(db, { incluirDestinados: true }).filas.map(t => ({
+    rp: t.rp, categoria: t.categoria, pelo: t.pelo, edad_meses: t.edad_meses, peso_adulto: t.peso_actual,
+    partos: t.hijos, destete_prom: t.destete_prom_hijos, eficiencia: null, ipp: null, estado: t.estado, bloque: null }));
+  return [...vacas, ...toros];
+}
+
 // A dónde va cada animal cuando sale del plantel. No todas las salidas son
 // fracasos: el mejor toro también se va, como reproductor.
 app.get("/api/destinos", (req, res) => {
   if (!destinosMod) return res.status(503).json({ error: "Módulo no disponible" });
   const db = dbDe(req);
   try {
-    const pl = plantelMod.plantel(db);
-    res.json(destinosMod.listar(db, pl.filas, { temporada: req.query.temporada }));
+    res.json(destinosMod.listar(db, filasParaDestinos(db), { temporada: req.query.temporada }));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

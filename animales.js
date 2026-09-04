@@ -58,8 +58,13 @@ function toros(db, opciones = {}) {
   const ce = (() => { try { return db.prepare("SELECT animal_id, valor, fecha FROM mediciones WHERE upper(tipo)='CE' ORDER BY fecha DESC").all(); } catch (e) { return []; } })();
   const destinos = (() => { try { return db.prepare("SELECT animal_rp, destino, concretado FROM destinos WHERE temporada=?").all(anio); } catch (e) { return []; } })();
   const prom = a => a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length * 10) / 10 : null;
+  // Un toro con destino de salida (venta, terminación) ya no es un toro del plantel.
+  let salen = new Set();
+  try { salen = require("./destinos.js").destinadosASalir(db); } catch (e) {}
+  const destinados = filas.filter(t => salen.has(String(t.rp).toUpperCase())).length;
+  const quedan = opciones.incluirDestinados ? filas : filas.filter(t => !salen.has(String(t.rp).toUpperCase()));
 
-  const out = filas.map(t => {
+  const out = quedan.map(t => {
     const claves = new Set([compacto(t.rp), compacto(t.nombre)].filter(Boolean));
     const hijos = hijosDe.filter(h => claves.has(compacto(h.padre_rp)));
     const delAnio = hijos.filter(h => String(h.fecha_nac || "").startsWith(anio));
@@ -91,6 +96,7 @@ function toros(db, opciones = {}) {
     filas: out, anio,
     resumen: {
       total: out.length,
+      destinados,
       con_hijos_anio: out.filter(t => t.hijos_anio).length,
       hijos_totales: out.reduce((a, t) => a + t.hijos, 0),
       hijos_anio: out.reduce((a, t) => a + t.hijos_anio, 0),
