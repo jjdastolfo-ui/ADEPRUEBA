@@ -607,7 +607,7 @@ function pintar(){
         [T.hijos_totales||0,'Hijos registrados','',''],
         [T.pn_prom_hijos||'—','PN prom hijos','',''],
         [T.destete_prom_hijos||'—','Destete prom hijos','oro',''],
-        [T.en_corral||0,'En corral','',''],
+        [T.destinados||0,'Con destino de salida',T.destinados?'oro':'',''],
         [T.sin_pesar||0,'Sin pesar +6 meses',T.sin_pesar?'al':'','']
       ]; })()
     : vista==='nac' ? (()=>{ const f=datosDe('nac'); const pb=R.por_bloque||{}; const sinPn=f.filter(a=>a.peso_nac==null).length; return [
