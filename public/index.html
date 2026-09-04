@@ -252,6 +252,7 @@ h3.s .btn{margin-left:auto}
       <button class="tab" data-v="dest" onclick="verVista(this)">Destinos</button>
       <button class="tab" data-v="fallos" onclick="verVista(this)">No destetaron</button>
       <button class="tab" data-v="animales" onclick="verVista(this)">Todos</button>
+      <button class="tab" data-v="empresa" id="tabEmpresa" onclick="verVista(this)" style="display:none">Empresa</button>
       <button class="tab sep" data-v="relevar" onclick="verVista(this)">✎ Relevar</button>
       <button class="tab" data-v="archivos" onclick="verVista(this)">⇩ Archivos</button>
     </div>
@@ -311,6 +312,7 @@ h3.s .btn{margin-left:auto}
   </div>
 
   <div id="relevarVista" class="panel" style="display:none"></div>
+  <div id="empresaVista" class="panel" style="display:none"></div>
   <div id="archivosVista" class="panel" style="display:none"></div>
 </main>
 
@@ -337,6 +339,7 @@ h3.s .btn{margin-left:auto}
 const API = location.origin.includes('file') ? 'http://localhost:3001' : location.origin;
 let campo = new URLSearchParams(location.search).get('campo') || localStorage.getItem('campo') || '';
 let D = null, vista = 'plantel', orden = { col:'rp', desc:false }, historia = [];
+let empresaActual = null, camposTodos = [];
 // La conversación queda guardada en el servidor por sesión: al recargar sigue.
 let sesion = localStorage.getItem('sesion'); if(!sesion){ sesion = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now())+Math.random()); localStorage.setItem('sesion', sesion); }
 let colsOcultas = {};   // por vista: { clave: true }
@@ -500,7 +503,9 @@ async function cargar(){
     sel.innerHTML = campos.map(c=>`<option value="${c.key}" ${c.key===campo?'selected':''}>${esc(c.nombre)} — ${c.animales} cab.</option>`).join('');
     sel.style.display = campos.length>1?'':'none';
     const act = campos.find(c=>c.key===campo)||campos[0];
-    if(act){ campo=act.key; document.getElementById('hBrand').textContent=act.nombre.toUpperCase(); }
+    if(act){ campo=act.key; document.getElementById('hBrand').textContent=act.nombre.toUpperCase();
+      empresaActual = act.empresa; document.getElementById('tabEmpresa').style.display = (act.campos_empresa>1)?'':'none'; }
+    camposTodos = campos;
   }catch(e){}
   try{
     const [pl, an, te, de, to] = await Promise.all([
@@ -721,6 +726,8 @@ function verVista(el){
   document.getElementById('tablaVista').style.display = esTabla?'':'none';
   document.getElementById('relevarVista').style.display = vista==='relevar'?'':'none';
   document.getElementById('archivosVista').style.display = vista==='archivos'?'':'none';
+  document.getElementById('empresaVista').style.display = vista==='empresa'?'':'none';
+  if(vista==='empresa') pintarEmpresa();
   if(esTabla){ limpiarFiltros(); orden={col:'rp',desc:false}; llenarFiltros(); pintar(); }
   if(vista==='relevar') pintarRelevar();
   if(vista==='archivos') pintarArchivos();
@@ -1096,6 +1103,59 @@ function emitirPlanilla(formato){
   bajar(urlCampo('/api/planilla'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
 }
 
+// ── Empresa: todos los campos ────────────────────────────────────────────────
+async function pintarEmpresa(){
+  const el=document.getElementById('empresaVista'); el.innerHTML='<div class="vacio">Cargando…</div>';
+  try{
+    const [r, st] = await Promise.all([
+      fetch(`${API}/api/empresa/resumen?empresa=${encodeURIComponent(empresaActual||'')}`).then(x=>x.json()),
+      fetch(`${API}/api/rodeo-resumen?empresa=${encodeURIComponent(empresaActual||'')}`).then(x=>x.json()).catch(()=>null)
+    ]);
+    if(r.error) throw new Error(r.error);
+    const T=r.totales; const n=v=>v==null?'—':v;
+    el.innerHTML=`
+      <div class="kpis" style="border:1px solid var(--linea);margin-bottom:14px">
+        <div class="kpi"><b>${T.campos}</b><span>Campos</span></div><div class="kpi"><b>${T.cabezas}</b><span>Cabezas</span></div>
+        <div class="kpi"><b>${T.vientres}</b><span>Vientres</span></div><div class="kpi bien"><b>${T.prenadas}</b><span>Preñadas</span></div>
+        <div class="kpi"><b>${T.criando}</b><span>Criando</span></div><div class="kpi ${T.fallaron?'al':''}"><b>${T.fallaron}</b><span>No destetaron</span></div>
+        <div class="kpi"><b>${T.toros}</b><span>Toros</span></div><div class="kpi"><b>${T.terminando}</b><span>Terminando</span></div>
+        <div class="kpi ${T.marcados_salida?'oro':''}"><b>${T.marcados_salida}</b><span>Con destino de salida</span></div>
+      </div>
+      <div class="caja"><h3>${esc(r.nombre)} · campo por campo</h3>
+        <div class="tw"><table><thead><tr><th>Campo</th><th class="num">Cabezas</th><th class="num">Vientres</th><th class="num">Preñadas</th><th class="num">Criando</th><th class="num">Destetaron</th><th class="num">No destetaron</th><th class="num">Destete efectivo</th><th class="num">Eficiencia</th><th class="num">Toros</th><th class="num">Terminando</th><th class="num">Kg corral</th><th class="num">Salen</th><th></th></tr></thead>
+        <tbody>${r.campos.map(c=>c.ok?`<tr><td class="rp">${esc(c.nombre)}</td><td class="num">${c.cabezas}</td><td class="num">${c.vientres}</td><td class="num bi">${c.prenadas}</td><td class="num">${c.criando}</td><td class="num">${c.destetaron}</td><td class="num ${c.fallaron?'al':''}">${c.fallaron}</td><td class="num">${c.destete_efectivo!=null?c.destete_efectivo+'%':'—'}</td><td class="num">${c.eficiencia!=null?c.eficiencia+'%':'—'}</td><td class="num">${c.toros}</td><td class="num">${c.terminando}</td><td class="num">${n(c.kg_corral)}</td><td class="num">${c.marcados_salida}</td><td>${c.key===campo?'<span class="tag t-cabeza">este</span>':`<a href="#" onclick="campo='${esc(c.key)}';localStorage.setItem('campo',campo);location.reload();return false" style="color:var(--azul)">ir →</a>`}</td></tr>`:`<tr><td class="rp">${esc(c.nombre)}</td><td colspan="13" class="al">${esc(c.error)}</td></tr>`).join('')}</tbody></table></div>
+        <p class="ayuda" style="margin-top:10px">Financiero: ${r.finanzas.configurado?'<b>'+esc(r.finanzas.url)+'</b>'+(r.finanzas.campo?' · '+esc(r.finanzas.campo):''):'no configurado (EMPRESAS o FINANZAS_URL)'}. <a href="${API}/api/rodeo-resumen?empresa=${encodeURIComponent(r.empresa)}" target="_blank">Stock consolidado para el financiero</a>.</p>
+      </div>
+      ${st&&st.categorias?`<div class="caja"><h3>Stock consolidado por categoría</h3>
+        <div class="tw"><table><thead><tr><th>Categoría</th><th>Registro</th><th class="num">Plantel</th><th class="num">A la venta</th><th class="num">Total</th><th class="num">Kg prom</th><th class="num">Kg totales</th><th class="num">Sin peso</th></tr></thead>
+        <tbody>${st.categorias.map(c=>`<tr><td class="rp">${esc(c.categoria)}</td><td class="mut">${esc(c.registro)}</td><td class="num">${c.plantel}</td><td class="num">${c.venta}</td><td class="num"><b>${c.cantidad}</b></td><td class="num">${n(c.kg_estimado)}</td><td class="num">${c.kg_total?c.kg_total.toLocaleString('es-AR'):'—'}</td><td class="num ${c.sin_peso?'al':''}">${c.sin_peso}</td></tr>`).join('')}
+        <tr><td><b>Total</b></td><td></td><td class="num"><b>${st.totales.plantel}</b></td><td class="num"><b>${st.totales.venta}</b></td><td class="num"><b>${st.totales.cabezas}</b></td><td></td><td class="num"><b>${st.totales.kg_total.toLocaleString('es-AR')}</b></td><td></td></tr></tbody></table></div></div>`:''}
+      <div class="caja"><h3>Trasladar animales a otro campo</h3>
+        <p class="ayuda">Los RP, uno por línea, y a qué campo van. Viajan con todo su historial; en este campo quedan como trasladados. Primero Revisar.</p>
+        <div class="fila">
+          <div class="campo"><label>Desde</label><select id="trDesde">${camposTodos.filter(c=>c.empresa===empresaActual).map(c=>`<option value="${esc(c.key)}" ${c.key===campo?'selected':''}>${esc(c.nombre)}</option>`).join('')}</select></div>
+          <div class="campo"><label>Hasta</label><select id="trHasta">${camposTodos.filter(c=>c.empresa===empresaActual&&c.key!==campo).map(c=>`<option value="${esc(c.key)}">${esc(c.nombre)}</option>`).join('')}</select></div>
+          <div class="campo"><label>Fecha</label><input id="trFecha" type="date" value="${hoy()}"></div>
+          <div class="campo w"><label>Motivo</label><input id="trMotivo" placeholder="opcional"></div>
+        </div>
+        <textarea id="trTexto" class="lineas" style="min-height:90px" placeholder="RP, uno por línea"></textarea>
+        <div class="acciones"><button class="btn g" onclick="trasladar(true)">Revisar</button><button class="btn" id="trConfirmar" onclick="trasladar(false)" disabled>Confirmar traslado</button><span class="mut" id="trEstado" style="font-size:12px"></span></div>
+        <div class="res" id="trRes"></div>
+      </div>`;
+  }catch(e){ el.innerHTML=`<div class="aviso mal">${esc(e.message)}</div>`; }
+}
+async function trasladar(simular){
+  const body={ texto:document.getElementById('trTexto').value, desde:document.getElementById('trDesde').value, hasta:document.getElementById('trHasta').value, fecha:document.getElementById('trFecha').value, motivo:document.getElementById('trMotivo').value, simular };
+  const est=document.getElementById('trEstado'); est.textContent=simular?'Revisando…':'Trasladando…';
+  try{
+    const r=await fetch(`${API}/api/traslados`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(x=>x.json());
+    if(r.error) throw new Error(r.error);
+    est.textContent=r.mensaje; document.getElementById('trConfirmar').disabled=!(simular&&r.bien>0);
+    document.getElementById('trRes').innerHTML=`<div class="tw"><table><thead><tr><th>RP</th><th>Categoría</th><th>Resultado</th></tr></thead><tbody>${r.filas.map(f=>`<tr><td class="rp">${esc(f.rp)}</td><td class="mut">${esc(f.categoria||'')}</td><td>${f.ok?(f.hecho?'<span class="tag t-ok">trasladado</span>':'<span class="tag t-preñada">listo</span>'):'<span class="tag t-error">no</span> <span class="al">'+esc(f.error||'')+'</span>'}${f.avisos&&f.avisos.length?' <span class="mut">⚠ '+esc(f.avisos.join('; '))+'</span>':''}</td></tr>`).join('')}</tbody></table></div>`;
+    if(!simular&&r.bien){ toast(r.mensaje,5000); cargar(); }
+  }catch(e){ est.textContent=''; document.getElementById('trRes').innerHTML=`<div class="aviso mal">${esc(e.message)}</div>`; }
+}
+
 // ── Archivos ─────────────────────────────────────────────────────────────────
 async function pintarArchivos(){
   const el=document.getElementById('archivosVista');
@@ -1113,6 +1173,16 @@ async function pintarArchivos(){
       <div>${['plantel','toros','nacimientos','recria','terminacion','destinos','fallos','animales','pesadas','servicios','sanidad','mediciones','notas','lotes'].map(c=>
         `<span class="chip" onclick="bajarUrl('/api/exportar/${c}.xlsx')">⇩ ${c}</span>`).join('')}
         <span class="chip" style="border-color:var(--azul);color:var(--azul)" onclick="bajarUrl('/api/exportar/rodeo.xlsx')">⇩ Rodeo completo (todas las hojas)</span></div>
+    </div>
+    <div class="caja" id="cajaFin">
+      <h3>Enlace con el financiero</h3>
+      <p class="ayuda" id="finTexto">Consultando…</p>
+      <div class="acciones">
+        <button class="btn g" onclick="finanzasEstado()">Probar conexión</button>
+        <button class="btn" onclick="finanzasSincronizar()">Mandar el stock al financiero</button>
+        <a class="chip" href="${urlCampo('/api/rodeo-resumen')}" target="_blank">Ver lo que le damos (/api/rodeo-resumen)</a>
+      </div>
+      <div id="finUltimos"></div>
     </div>
     <div class="caja">
       <h3>Lo que el bot recuerda del campo <span class="mut" style="font-weight:300;letter-spacing:0;text-transform:none">${memoria.length}</span></h3>
@@ -1136,12 +1206,27 @@ async function pintarArchivos(){
         <a href="#" onclick="borrarArchivo(${a.id});return false" style="color:var(--rojo)">Borrar</a></div>`).join('')}</div>`:'<div class="vacio" style="padding:20px">Todavía no hay archivos</div>'}
     </div>`;
 }
+async function finanzasEstado(){
+  const t=document.getElementById('finTexto'); if(!t) return;
+  try{
+    const e=await fetch(urlCampo('/api/finanzas/estado')).then(r=>r.json());
+    if(!e.configurado){ t.innerHTML='No está configurado. En Railway, agregá <b>FINANZAS_URL</b> con la dirección de IMPROLUX (y en IMPROLUX, <b>ADE_URL</b> con la dirección de esta app). Igual, el financiero ya puede leer el stock en /api/rodeo-resumen.'; return; }
+    t.innerHTML = e.conecta ? `Conectado a <b>${esc(e.url)}</b>${e.campo?' · campo '+esc(e.campo):''}. Este mes según el financiero: ingresos ${Math.round(e.resumen.ingresos_mes||0).toLocaleString('es-AR')}, egresos ${Math.round(e.resumen.egresos_mes||0).toLocaleString('es-AR')}.` : `Configurado (${esc(e.url)}) pero no responde: ${esc(e.error||'')}`;
+    const u=e.ultimos||[]; document.getElementById('finUltimos').innerHTML = u.length ? `<div class="lista" style="margin-top:10px">${u.slice(0,8).map(x=>`<div class="it"><span class="tag ${x.ok?'t-ok':'t-error'}">${esc(x.direccion)}</span><b>${esc(x.que)}</b><span class="d">${esc(x.detalle||'')}</span><span class="mut" style="font-size:11px">${fec(String(x.created_at).slice(0,10))} ${String(x.created_at).slice(11,16)}</span></div>`).join('')}</div>` : '';
+  }catch(err){ t.textContent='No pude consultar el estado: '+err.message; }
+}
+async function finanzasSincronizar(){
+  try{ const r=await fetch(urlCampo('/api/finanzas/sincronizar'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(x=>x.json()); if(r.error) throw new Error(r.error); toast(r.mensaje||'Stock enviado',5000); finanzasEstado(); }
+  catch(e){ toast('No pude: '+e.message,5000); }
+}
 async function olvidar(id){ await fetch(urlCampo('/api/memoria/'+id),{method:'DELETE'}); pintarArchivos(); }
 async function recordarDesdeTablero(){
   const el=document.getElementById('memTexto'), texto=el.value.trim(); if(!texto) return;
   const r=await fetch(urlCampo('/api/memoria'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({texto,categoria:'campo'})}).then(x=>x.json());
   if(r.error) return toast(r.error); toast('Anotado'); pintarArchivos();
 }
+const _pintarArchivosOrig = pintarArchivos;
+pintarArchivos = async function(){ await _pintarArchivosOrig(); finanzasEstado(); };
 async function borrarTablero(slug){ if(!confirm('¿Borrar el tablero '+slug+'?')) return; await fetch(urlCampo('/api/tableros/'+encodeURIComponent(slug)),{method:'DELETE'}); pintarArchivos(); }
 async function borrarArchivo(id){ if(!confirm('¿Borrar el archivo?')) return; await fetch(urlCampo('/api/archivos/'+id),{method:'DELETE'}); pintarArchivos(); }
 
