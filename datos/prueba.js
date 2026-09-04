@@ -129,6 +129,9 @@ ok(destinosMod.normalizarDestino("a engorde", true) === "NOVILLO TERMINACION", "
 ok(destinosMod.normalizarDestino("venta preñada", false) === "VENTA PREÑADA", "'venta preñada' tal cual");
 ok(destinosMod.normalizarDestino("reproductor", true) === "TORO REPRODUCTOR", "'reproductor'");
 ok(destinosMod.normalizarDestino("cualquier cosa", false) === null, "lo desconocido no se adivina");
+const ventaToro = destinosMod.marcar(db, "B332", "venta directa", { temporada: "2098" });
+ok(ventaToro.ok && ventaToro.destino === "VENTA DIRECTA" && !animalesMod.toros(db).filas.some(t => t.rp === "B332"), "un toro se puede vender directo y sale de Toros");
+destinosMod.sacar(db, "B332", "2098");
 const dm = destinosMod.marcarVarios(db, ["011", "13", "B332", "ZZZ"], "engorde", { motivo: "VACIA", temporada: "2099" });
 const marcados = db.prepare("SELECT animal_rp, destino FROM destinos WHERE temporada='2099' ORDER BY animal_rp").all();
 ok(dm.hechos.length === 3 && dm.fallados.length === 1, "marca 3 y avisa 1 (ZZZ)");
@@ -145,6 +148,22 @@ ok(animalesMod.terminacion(db).resumen.total === antesT.total, "cuando sale del 
 db.prepare("UPDATE animales SET estado='ACTIVO' WHERE rp='15'").run();
 db.prepare("DELETE FROM destinos WHERE animal_rp='15'").run();
 ok(exportarMod.conjunto(db, mods, "recria").filas.every(f => f.edad_meses <= 20), "la recría llega hasta los 20 meses");
+// Un destino de salida saca del plantel y de los toros; sacarlo los devuelve.
+const plantelAntes = plantelMod.plantel(db).filas.length, torosAntes = animalesMod.toros(db).resumen.total;
+destinosMod.marcar(db, "17", "venta directa", { temporada: anioHoy });
+destinosMod.marcar(db, "B332", "toro terminacion", { temporada: anioHoy });
+destinosMod.marcar(db, "19", "queda", { temporada: anioHoy });
+const plDesp = plantelMod.plantel(db);
+ok(plDesp.filas.length === plantelAntes - 1 && !plDesp.filas.some(f => f.rp === "17") && plDesp.filas.some(f => f.rp === "19"), "una vaca a venta directa sale del plantel; una que QUEDA no");
+ok(plDesp.resumen.destinadas === 1 && plDesp.resumen.avisos.some(a => /destino de salida/.test(a.texto)), "el plantel avisa cuántas tienen destino de salida");
+ok(plantelMod.plantel(db, { incluirDestinados: true }).filas.length === plantelAntes, "con incluirDestinados se ven todas");
+const tDesp = animalesMod.toros(db);
+ok(tDesp.resumen.total === torosAntes - 1 && tDesp.resumen.destinados === 1 && !tDesp.filas.some(t => t.rp === "B332"), "un toro a terminación sale de Toros");
+const listaD = destinosMod.listar(db, plantelMod.plantel(db, { incluirDestinados: true }).filas);
+ok(listaD.filas.find(f => f.rp === "17").edad_meses > 0, "en Destinos la vaca sigue con sus datos productivos");
+ok(animalesMod.terminacion(db).filas.some(f => f.rp === "B332" && f.origen === "marcado"), "el toro aparece en Terminación como marcado");
+destinosMod.sacar(db, "17", anioHoy); destinosMod.sacar(db, "B332", anioHoy); destinosMod.sacar(db, "19", anioHoy);
+ok(plantelMod.plantel(db).filas.length === plantelAntes && animalesMod.toros(db).resumen.total === torosAntes, "sacar el destino los devuelve");
 
 // ── El bot, con un Claude simulado ───────────────────────────────────────────
 // El cliente falso recibe un guion: una función por llamada, que mira los
