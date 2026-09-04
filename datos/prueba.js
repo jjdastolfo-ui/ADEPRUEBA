@@ -17,7 +17,11 @@ const { execFileSync } = require("child_process");
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rodeo-prueba-"));
 process.env.DB_DIR = dir;
 process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "sin-clave";
+// Dos campos de la misma empresa, cada uno con su base.
+process.env.CAMPOS = JSON.stringify({ principal: { nombre: "Angus del Este", empresa: "improlux" }, triunfo: { nombre: "El Triunfo", empresa: "improlux" } });
+process.env.EMPRESAS = JSON.stringify({ improlux: { nombre: "Improlux", finanzas_url: "", finanzas_campo: "AMAKAIK" } });
 execFileSync(process.execPath, [path.join(__dirname, "semilla.js")], { env: { ...process.env, DB_DIR: dir }, stdio: "ignore" });
+execFileSync(process.execPath, [path.join(__dirname, "semilla.js")], { env: { ...process.env, DB_DIR: dir, CAMPO: "triunfo" }, stdio: "ignore" });
 
 const S = require("../server.js");
 const db = S.getDB("principal");
@@ -229,7 +233,7 @@ const bot1 = botMod.crear({ plantelMod, animalesMod, destinosMod, exportarMod, r
       return { content: [texto(`Fallaron ${out.total} vacas.`)] };
     }
   ]) });
-ok(bot1.HERRAMIENTAS.map(h => h.name).join() === "plantel,ficha,toros,buscar,consultar,escribir,relevar,crear_tablero,exportar_archivo,destinar,leer_adjunto,importar_adjunto,recordar", "las trece herramientas, en orden fijo");
+ok(bot1.HERRAMIENTAS.map(h => h.name).join() === "plantel,ficha,toros,buscar,consultar,escribir,relevar,crear_tablero,exportar_archivo,destinar,leer_adjunto,importar_adjunto,campos,trasladar,finanzas,recordar", "las dieciséis herramientas, en orden fijo");
 const eventos = [];
 (async () => {
   const r = await bot1.responder(db, "Prueba", "¿cuántas fallaron?", { campoKey: "principal", canal: "web", usuario: "prueba", onEvento: e => eventos.push(e) });
@@ -343,6 +347,78 @@ const eventos = [];
   const pdf = adjuntosMod.preparar(db, { texto: "qué dice", adjuntos: [{ nombre: "informe.pdf", mime: "application/pdf", base64: Buffer.from("%PDF-1.4").toString("base64") }] });
   ok(pdf.content.some(b => b.type === "document" && b.source.media_type === "application/pdf"), "un PDF va como documento");
   ok(adjuntosMod.listar(db).length >= 4, "los adjuntos quedan listados");
+
+  // Enlace con el financiero: el stock como lo lee IMPROLUX, la venta que se manda, el bot que consulta.
+  const finanzasMod = require("../finanzas.js");
+  const rr = finanzasMod.resumenRodeo(db, { campoKey: "principal", campoNombre: "Prueba", destinosMod });
+  ok(rr.categorias.length >= 4 && rr.categorias.every(c => c.categoria && c.registro && typeof c.plantel === "number" && typeof c.venta === "number"), "rodeo-resumen tiene categoría, registro, plantel y venta");
+  const vacasPP = rr.categorias.find(c => c.categoria === "VACA" && c.registro === "PP");
+  ok(vacasPP && vacasPP.plantel > 30 && vacasPP.kg_estimado > 350, "las vacas PP salen con cantidad y kilos promedio reales");
+  destinosMod.marcar(db, "21", "venta directa", { temporada: anioHoy });
+  const rr2 = finanzasMod.resumenRodeo(db, { destinosMod });
+  const v2 = rr2.categorias.find(c => c.categoria === "VACA" && c.registro === "PP");
+  ok(v2.venta === vacasPP.venta + 1 && v2.plantel === vacasPP.plantel - 1, "una vaca marcada a venta pasa de plantel a venta en el resumen");
+  // Un financiero simulado: guarda lo que le mandan y contesta.
+  const recibido = [];
+  finanzasMod.setFetch(async (url, op) => {
+    recibido.push({ url, body: op && op.body ? JSON.parse(op.body) : null });
+    const cuerpo = url.endsWith("/api/transacciones") && op.method === "POST" ? { ok: true, id: 77 }
+      : url.includes("/api/transacciones") ? [{ fecha: "2026-08-10", concepto: "SANIDAD", detalle: "ivermectina", egreso: 300 }, { fecha: "2026-08-20", concepto: "VENTA HACIENDA", detalle: "5 novillos", ingreso: 8500 }, { fecha: "2026-07-01", concepto: "SANIDAD", egreso: 100 }]
+      : url.endsWith("/api/resumen") ? { ingresos_mes: 8500, egresos_mes: 400 } : url.endsWith("/api/ganado/sync-ade") ? { ok: true, mensaje: "90 cabezas" } : {};
+    return { ok: true, status: 200, text: async () => JSON.stringify(cuerpo) };
+  });
+  process.env.FINANZAS_URL = "https://fin.prueba"; process.env.FINANZAS_CAMPO = "AMAKAIK";
+  const salida = await S.registrarSalida(db, { rps: ["21"], fecha: "2026-09-03", precio_total: 1500, comprador: "Feria Norte", kg: 480 });
+  ok(salida.ok && salida.venta && salida.venta.enviado && salida.venta.id_financiero === 77, "la salida con precio manda la venta al financiero");
+  const tx = recibido.find(r => r.url.endsWith("/api/transacciones") && r.body);
+  ok(tx && tx.body.concepto === "VENTA HACIENDA" && tx.body.ingreso === 1500 && /RP 21/.test(tx.body.detalle) && /480 kg/.test(tx.body.detalle) && tx.body.proveedor === "Feria Norte" && tx.body.fuente === "rodeo", "la transacción lleva concepto, monto, detalle con RP y kilos, comprador");
+  ok(animalesMod.porRp(db, "21").estado === "VENDIDO", "el animal quedó VENDIDO");
+  const sinPrecio = await S.registrarSalida(db, { rps: ["23"], fecha: "2026-09-03" });
+  ok(sinPrecio.ok && !sinPrecio.venta && /salió/.test(sinPrecio.mensaje), "sin precio sale del campo y no manda nada");
+  db.prepare("UPDATE animales SET estado='ACTIVO' WHERE rp IN ('21','23')").run(); db.prepare("DELETE FROM destinos WHERE animal_rp IN ('21','23')").run();
+  const fq = await finanzasMod.consultar(db, { consulta: "transacciones", concepto: "sanidad", desde: "2026-08-01" });
+  ok(fq.total === 1 && fq.egresos === 300 && fq.por_concepto.SANIDAD.n === 1, "consulta transacciones filtra por concepto y fecha y suma");
+  const est = await finanzasMod.estado(db);
+  ok(est.configurado && est.conecta && est.ultimos.length >= 2, "el estado muestra conexión y los últimos enlaces");
+  const bot9 = botMod.crear({ plantelMod, animalesMod, destinosMod, exportarMod, relevarMod, guardarTablero: S.guardarTablero, CAMPOS: S.CAMPOS, finanzasMod,
+    cliente: clienteFalso([
+      () => ({ content: [uso("t10", "finanzas", { consulta: "resumen" })] }),
+      (params) => ({ content: [texto("Ingresos del mes: " + JSON.parse(params.messages[params.messages.length - 1].content[0].content).ingresos_mes)] })
+    ]) });
+  const r10 = await bot9.responder(db, "Prueba", "¿cómo venimos de plata?", { campoKey: "principal" });
+  ok(r10.respuesta === "Ingresos del mes: 8500" && r10.pasos[0].herramienta === "finanzas", "el bot consulta el financiero");
+  delete process.env.FINANZAS_URL;
+  const sinEnlace = await finanzasMod.enviarVenta(db, { rps: ["11"], precio_total: 100 });
+  ok(!sinEnlace.enviado && /FINANZAS_URL/.test(sinEnlace.motivo), "sin FINANZAS_URL avisa y no rompe");
+
+  // Empresas y multicampo.
+  const em = S.empresasDe();
+  ok(em.lista().length === 1 && em.lista()[0].campos.length === 2 && em.empresaDe("triunfo").key === "improlux", "una empresa con dos campos");
+  const re = em.resumen("improlux");
+  ok(re.campos.length === 2 && re.campos.every(c => c.ok) && re.totales.cabezas === re.campos[0].cabezas + re.campos[1].cabezas && re.totales.vientres > 150, "el resumen de la empresa suma los dos campos");
+  const rr3 = em.rodeoResumen("improlux");
+  const vaca3 = rr3.categorias.find(c => c.categoria === "VACA" && c.registro === "PP");
+  ok(rr3.campos.length === 2 && vaca3 && vaca3.cantidad === rr3.campos.reduce((s, c) => s, 0) + vaca3.cantidad && rr3.totales.cabezas === rr3.campos[0].cabezas + rr3.campos[1].cabezas, "el stock consolidado suma categorías de los dos campos");
+  ok(em.finanzasDe("triunfo").campo === "AMAKAIK", "el financiero sale de la empresa");
+  // Traslado: C900 existe sólo en principal.
+  const sim2 = em.trasladar({ rps: ["C900", "11", "ZZZ"], desde: "principal", hasta: "triunfo", simular: true });
+  ok(sim2.simulado && sim2.bien === 1 && sim2.filas[1].error && /ya hay un animal con RP 11/.test(sim2.filas[1].error) && /No existe ZZZ/.test(sim2.filas[2].error), "simular: C900 puede viajar, 11 choca con el destino, ZZZ no existe");
+  relevarMod.pesadas(db, { filas: [{ rp: "C900", peso: 60 }], fecha: "2026-09-03" });
+  const tr = em.trasladar({ rps: ["C900"], desde: "principal", hasta: "triunfo", fecha: "2026-09-03", motivo: "destete" });
+  const dbT = S.getDB("triunfo");
+  const enT = animalesMod.porRp(dbT, "C900");
+  ok(tr.bien === 1 && enT && enT.madre_rp && animalesMod.ficha(dbT, "C900").pesadas.length === 2, "C900 llegó a El Triunfo con madre y pesadas");
+  ok(animalesMod.porRp(db, "C900").estado === "TRASLADADO" && !animalesMod.listar(db).some(a => a.rp === "C900"), "en el origen quedó TRASLADADO y fuera de los activos");
+  ok(animalesMod.ficha(dbT, "C900").notas.some(x => /Llegó de Angus del Este/.test(x.texto)) && animalesMod.ficha(db, "C900").notas.some(x => /Trasladado a El Triunfo/.test(x.texto)), "queda una nota en los dos campos");
+  let errT = null; try { em.trasladar({ rps: ["11"], desde: "principal", hasta: "principal" }); } catch (e) { errT = e.message; }
+  ok(/mismo campo/.test(errT), "no deja trasladar al mismo campo");
+  const bot10 = botMod.crear({ plantelMod, animalesMod, destinosMod, exportarMod, relevarMod, guardarTablero: S.guardarTablero, CAMPOS: S.CAMPOS, empresas: S.empresasDe,
+    cliente: clienteFalso([
+      () => ({ content: [uso("t11", "campos", {})] }),
+      (params) => ({ content: [texto("Campos: " + JSON.parse(params.messages[params.messages.length - 1].content[0].content).totales.campos)] })
+    ]) });
+  const r11 = await bot10.responder(db, "Prueba", "¿cuántos campos tenemos?", { campoKey: "principal" });
+  ok(r11.respuesta === "Campos: 2" && r11.pasos[0].herramienta === "campos", "el bot ve la empresa entera");
 
   console.log(`\n${n} pruebas, ${fallas} fallas`);
   db.close();
