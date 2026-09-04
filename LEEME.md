@@ -50,11 +50,37 @@ Node 22 o más nuevo (`engines` en `package.json` lo pide; Railway lo respeta). 
 versión 13 de `better-sqlite3` trae el binario compilado para Node 22 a 25, así
 no hace falta compilar nada ni en Railway ni en la compu.
 
-Ejemplo de `CAMPOS`:
+Ejemplo de `CAMPOS` (cada campo es una base aparte, `/data/<clave>.db`):
 
 ```json
-{"principal":{"nombre":"Angus del Este","empresa":"improlux"}}
+{"principal":{"nombre":"Angus del Este","empresa":"improlux"},"triunfo":{"nombre":"El Triunfo","empresa":"improlux"}}
 ```
+
+## Empresas y multicampo
+
+Una empresa tiene uno o más campos y un sistema financiero. Los campos dicen a
+qué empresa pertenecen (`empresa` en `CAMPOS`); la empresa se describe en
+`EMPRESAS`:
+
+```json
+{"improlux":{"nombre":"Improlux","finanzas_url":"https://improlux.up.railway.app","finanzas_campo":"AMAKAIK"},
+ "amakaik":{"nombre":"Cabaña Amakaik","finanzas_url":"https://videla-production.up.railway.app","finanzas_campo":"AMAKAIK"}}
+```
+
+Si `EMPRESAS` no está, se arma sola con las empresas que nombran los campos y
+usa `FINANZAS_URL` / `FINANZAS_CAMPO` globales.
+
+Con más de un campo aparece la pestaña **Empresa**: cabezas, vientres, parición,
+toros y terminación por campo, el stock consolidado por categoría (el que lee el
+financiero en `/api/rodeo-resumen?empresa=…`) y el formulario de **traslados**.
+Un traslado copia al animal con todo su historial al campo de destino y lo deja
+como TRASLADADO en el origen; avisa si una vaca tiene ternero al pie que no viaja.
+También por `POST /api/traslados {rps, desde, hasta, fecha, motivo, simular}` y
+por el bot ("pasá la 23 y la 45 a El Triunfo").
+
+El bot está parado en un campo (el del tablero o el del número de WhatsApp,
+`WHATSAPP_CAMPOS`), pero con la herramienta `campos` ve la empresa entera y
+compara campos. Las ventas van al financiero de la empresa del campo.
 
 ## Buscar
 
@@ -183,6 +209,43 @@ Corre las 20 preguntas de `datos/preguntas.js` contra la base de prueba (la
 respuesta correcta se calcula, no se adivina) e imprime cuántas acertó, los
 tokens y el costo aproximado. El informe queda en `datos/evaluaciones/`. Es
 la forma de saber si un cambio de modelo, esfuerzo o prompt mejoró o empeoró.
+
+## Enlace con el financiero (IMPROLUX / VIDELA)
+
+Tres flujos, todos en `finanzas.js`:
+
+1. **El financiero lee el stock de acá.** `GET /api/rodeo-resumen?campo=…` devuelve
+   por categoría y registro (PP / GENERAL) cuántos hay en plantel, cuántos están
+   marcados para venta y los **kilos promedio reales** (última pesada de cada uno,
+   si tiene menos de un año). Es el formato que ya lee el "sync-ade" del
+   financiero: en IMPROLUX poné la variable `ADE_URL` con la dirección de esta app
+   y apretá "Sincronizar con ADE" (o desde acá, en Archivos → "Mandar el stock al
+   financiero").
+2. **Las ventas van solas.** Cuando registrás una salida con precio (por el chat:
+   "salieron los 5 novillos al frigorífico, 8.500 dólares", o por
+   `POST /api/destinos/salida` con `{rps, fecha, precio_total | precio_por_cabeza, comprador, kg}`),
+   RODEO le manda al financiero una transacción `VENTA HACIENDA` con el detalle
+   (categorías, RP, kilos, comprador). Sin precio, no manda nada y lo dice.
+3. **El bot lee el financiero.** Herramienta `finanzas`: resumen del mes,
+   transacciones por concepto y fecha, stock valuado, cuentas, cheques. Así
+   contesta "cuánto gastamos en sanidad este ciclo" cruzando con el rodeo.
+
+Variables en Railway (en RODEO): `FINANZAS_URL` (la dirección del financiero),
+`FINANZAS_CAMPO` (cómo se llama este campo allá, ej. `AMAKAIK`), `FINANZAS_CLAVE`
+(opcional). Todo lo que va y viene queda anotado en la tabla `enlaces` y se ve
+en Archivos → "Enlace con el financiero".
+
+Para que el financiero valúe con los kilos reales en vez del estimado a mano, en
+su `sync-ade` hay que leer `kg_estimado` de lo que llega. En el bloque que
+recorre `lista`, después de `const venta = …`, agregar:
+
+```js
+const kg = parseFloat(it.kg_estimado) || 0;
+if (ex) { upd.run(plantel, venta, ex.id); if (kg) db.prepare("UPDATE stock_ganadero SET kg_estimado=? WHERE id=?").run(kg, ex.id); actualizados++; }
+else { ins.run(cat, reg, plantel, venta); if (kg) db.prepare("UPDATE stock_ganadero SET kg_estimado=? WHERE id=last_insert_rowid()").run(kg); creados++; }
+```
+
+(reemplaza el `if (ex) … else …` que ya está).
 
 ## Probar con la base real antes de desplegar
 

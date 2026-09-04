@@ -42,6 +42,8 @@ const exportarMod = require("./exportar.js");   // Excel, CSV, imprimible, archi
 const relevarMod = require("./relevar.js");     // carga de campo e importación de planillas
 const botMod = require("./bot.js");             // el bot: Claude con la base en la mano
 const adjuntosMod = require("./adjuntos.js");   // fotos, PDF, Excel, CSV, Word que le mandan al bot
+const finanzasMod = require("./finanzas.js");   // el enlace con IMPROLUX / VIDELA
+const empresasMod = require("./empresas.js");   // una empresa: sus campos y su financiero
 const mods = () => ({ plantelMod, animalesMod, destinosMod });
 
 // ── CAMPOS ───────────────────────────────────────────────────────────────────
@@ -65,10 +67,15 @@ function getDB(key) {
   exportarMod.init(db);
   botMod.init(db);
   adjuntosMod.init(db);
+  finanzasMod.init(db);
   bases[k] = db;
   return db;
 }
 const dbDe = req => getDB(req.query.campo || (req.body && req.body.campo) || CAMPO_DEFAULT);
+const campoDe = req => { const k = req.query.campo || (req.body && req.body.campo); return CAMPOS[k] ? k : CAMPO_DEFAULT; };
+// Las empresas se arman con los campos; se crean después de getDB porque lo usan.
+let empresas;
+const empresasDe = () => empresas || (empresas = empresasMod.crear({ CAMPOS, getDB, plantelMod, animalesMod, destinosMod, finanzasMod }));
 
 function crearTablas(db) {
   db.exec(`
@@ -120,7 +127,7 @@ function crearTablas(db) {
 // Vive en bot.js. Acá sólo se crea con lo que necesita del servidor.
 // guardarTablero está definido más abajo; como es una declaración de función,
 // ya existe cuando se llega acá.
-const bot = botMod.crear({ plantelMod, animalesMod, destinosMod, exportarMod, relevarMod, adjuntosMod, guardarTablero, CAMPOS });
+const bot = botMod.crear({ plantelMod, animalesMod, destinosMod, exportarMod, relevarMod, adjuntosMod, finanzasMod, guardarTablero, registrarSalida, CAMPOS, empresas: empresasDe });
 const MODELO = bot.modelo;
 
 // ── TABLEROS QUE ARMA EL BOT ─────────────────────────────────────────────────
@@ -245,7 +252,8 @@ app.get("/api/campos", (req, res) => {
     let n = 0;
     try { n = getDB(key).prepare("SELECT COUNT(*) n FROM animales WHERE upper(COALESCE(estado,'ACTIVO'))='ACTIVO'").get().n; }
     catch (e) {}
-    return { key, nombre: c.nombre, empresa: c.empresa, animales: n };
+    const e = empresasDe().empresaDe(key);
+    return { key, nombre: c.nombre, empresa: c.empresa, empresa_nombre: e && e.nombre, campos_empresa: e ? e.campos.length : 1, animales: n };
   }));
 });
 
@@ -483,12 +491,42 @@ app.delete("/api/destinos/:rp", (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Cuando el animal efectivamente sale del campo.
-app.post("/api/destinos/:rp/salida", (req, res) => {
+// Cuando el animal efectivamente sale del campo. Con precio, la venta va al financiero.
+app.post("/api/destinos/:rp/salida", async (req, res) => {
   if (!destinosMod) return res.status(503).json({ error: "Módulo no disponible" });
-  try { res.json(destinosMod.concretar(dbDe(req), req.params.rp, req.body)); }
+  try { res.json(await registrarSalida(dbDe(req), { ...req.body, rps: [req.params.rp], campo: campoDe(req) })); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
+// Varios juntos: "salieron los 5 novillos al frigorífico, 2.300 kg, 8.500 dólares".
+app.post("/api/destinos/salida", async (req, res) => {
+  if (!destinosMod) return res.status(503).json({ error: "Módulo no disponible" });
+  try { res.json(await registrarSalida(dbDe(req), { ...req.body, campo: campoDe(req) })); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+async function registrarSalida(db, b) {
+  const rps = Array.isArray(b.rps) ? b.rps : [b.rp].filter(Boolean);
+  if (!rps.length) throw new Error("Falta el RP");
+  const n = rps.length;
+  const porCabeza = b.precio_por_cabeza != null ? Number(b.precio_por_cabeza) : b.precio_total != null ? Number(b.precio_total) / n : b.precio != null ? Number(b.precio) : null;
+  // Si nunca se le marcó destino, se le pone uno (venta directa, o el que venga) y sale igual.
+  const resultados = rps.map(rp => {
+    let r = destinosMod.concretar(db, rp, { fecha: b.fecha, precio: porCabeza, temporada: b.temporada });
+    if (!r.ok && /no tenía destino/.test(r.error || "")) {
+      const m = destinosMod.marcar(db, rp, b.destino || "venta directa", { temporada: b.temporada, motivo: b.motivo, usuario: "salida" });
+      if (m.ok) r = destinosMod.concretar(db, m.rp, { fecha: b.fecha, precio: porCabeza, temporada: b.temporada });
+      else r = m;
+    }
+    return r;
+  });
+  const salieron = rps.filter((rp, i) => resultados[i].ok);
+  let venta = null;
+  if (salieron.length && porCabeza > 0) {
+    venta = await finanzasMod.enviarVenta(db, { rps: salieron, fecha: b.fecha, comprador: b.comprador, kg: b.kg, precio_total: porCabeza * salieron.length, detalle: b.detalle, concepto: b.concepto }, b.campo ? empresasDe().finanzasDe(b.campo) : undefined);
+  }
+  return { ok: salieron.length > 0, salieron, resultados, venta,
+    mensaje: `${salieron.length} animal${salieron.length === 1 ? "" : "es"} salió${salieron.length === 1 ? "" : "eron"} del campo` +
+      (venta ? (venta.enviado ? ` · venta de ${venta.monto} enviada al financiero` : ` · la venta NO se mandó al financiero: ${venta.motivo}`) : "") };
+}
 
 app.post("/api/notas", (req, res) => {
   const { rp, texto } = req.body;
@@ -724,6 +762,48 @@ app.post("/api/importar-base", async (req, res) => {
   }
 });
 
+// ── ENLACE CON EL FINANCIERO (IMPROLUX / VIDELA) ─────────────────────────────
+// El financiero viene a buscar el stock acá (su "sync-ade" apunta a esta ruta).
+app.get("/api/rodeo-resumen", (req, res) => {
+  // ?empresa=… suma todos los campos de la empresa; ?campo=… uno solo.
+  if (req.query.empresa) {
+    try { return res.json(empresasDe().rodeoResumen(req.query.empresa)); } catch (e) { return res.status(400).json({ error: e.message }); }
+  }
+  const campoKey = CAMPOS[req.query.campo] ? req.query.campo : CAMPO_DEFAULT;
+  try {
+    const r = finanzasMod.resumenRodeo(getDB(campoKey), { campoKey, campoNombre: CAMPOS[campoKey].nombre, destinosMod });
+    try { getDB(campoKey).prepare("INSERT INTO enlaces (direccion, que, detalle, ok, respuesta) VALUES ('recibido','stock',?,1,?)").run(`el financiero leyó el stock de ${campoKey}`, `${r.totales.cabezas} cabezas`); } catch (e) {}
+    res.json(r);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get("/api/finanzas/estado", async (req, res) => {
+  const k = campoDe(req);
+  try { res.json({ empresa: empresasDe().empresaDe(k).nombre, ...(await finanzasMod.estado(getDB(k), empresasDe().finanzasDe(k))) }); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post("/api/finanzas/consultar", async (req, res) => {
+  const k = campoDe(req);
+  try { res.json(await finanzasMod.consultar(getDB(k), req.body || {}, empresasDe().finanzasDe(k))); } catch (e) { res.status(502).json({ error: e.message }); }
+});
+// Le pide al financiero que actualice su stock con todos los campos de la empresa.
+app.post("/api/finanzas/sincronizar", async (req, res) => {
+  const k = campoDe(req);
+  const e = empresasDe().empresaDe(k);
+  try { res.json(await finanzasMod.pedirSincronizacion(getDB(k), k, e.finanzas, e.campos.map(c => c.key))); } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+// ── EMPRESAS ─────────────────────────────────────────────────────────────────
+app.get("/api/empresas", (req, res) => res.json(empresasDe().lista()));
+app.get("/api/empresa/resumen", (req, res) => {
+  const key = req.query.empresa || empresasDe().empresaDe(campoDe(req)).key;
+  try { res.json(empresasDe().resumen(key)); } catch (e) { res.status(400).json({ error: e.message }); }
+});
+// Traslados entre campos de la misma empresa: { rps, desde, hasta, fecha?, motivo?, simular? }
+app.post("/api/traslados", (req, res) => {
+  const b = req.body || {};
+  try { res.json(empresasDe().trasladar({ rps: b.rps || (b.texto ? relevarMod.parsearLineas(b.texto).map(l => l.rp) : []), desde: b.desde || campoDe(req), hasta: b.hasta, fecha: b.fecha, motivo: b.motivo, simular: b.simular, usuario: b.usuario })); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // Bajar una copia de la base (respaldo consistente, aunque esté en uso).
 // Protegido con la variable RESPALDO_CLAVE: sin ella, esta ruta no existe.
 //   curl -o principal.db "https://TU-APP.up.railway.app/api/respaldo?clave=LA_CLAVE&campo=principal"
@@ -753,7 +833,7 @@ app.get("/api/volumen", (req, res) => {
 });
 
 app.get("/api/salud", (req, res) => {
-  const out = { version: VERSION, modelo: MODELO, esfuerzo: bot.esfuerzo, campos: {} };
+  const out = { version: VERSION, modelo: MODELO, esfuerzo: bot.esfuerzo, empresas: empresasDe().lista(), campos: {} };
   for (const k of Object.keys(CAMPOS)) {
     try {
       const db = getDB(k);
@@ -791,7 +871,7 @@ app.get("/", (req, res) => {
 });
 
 // Para poder probar las funciones sin levantar el servidor.
-module.exports = { app, getDB, bot, guardarTablero, CAMPOS, CAMPO_DEFAULT, partirMensaje, absolutizar };
+module.exports = { app, getDB, bot, guardarTablero, registrarSalida, empresasDe, CAMPOS, CAMPO_DEFAULT, partirMensaje, absolutizar };
 
 if (require.main === module) app.listen(PORT, () => {
   console.log(`${VERSION} en el puerto ${PORT} · modelo ${MODELO} · esfuerzo ${bot.esfuerzo}`);

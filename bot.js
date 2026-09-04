@@ -203,8 +203,10 @@ const HERRAMIENTAS = [
         motivo: { type: "string", description: "NO_DESTETO, VACIA, EDAD, PRODUCTIVIDAD, CARACTER, APLOMOS, UBRE, SANIDAD, SELECCION, COMERCIAL." },
         nota: { type: "string" },
         temporada: { type: "string", description: "Año. Por defecto el actual." },
-        accion: { type: "string", enum: ["marcar", "sacar", "salida"], description: "marcar (default) · sacar: le quita el destino y vuelve al plantel · salida: ya se fue del campo (con fecha y precio opcionales)." },
-        fecha: { type: "string" }, precio: { type: "number" }
+        accion: { type: "string", enum: ["marcar", "sacar", "salida"], description: "marcar (default) · sacar: le quita el destino y vuelve al plantel · salida: ya se fue del campo. Con precio, la venta se manda al sistema financiero." },
+        fecha: { type: "string" }, precio: { type: "number", description: "salida: precio por cabeza." },
+        precio_total: { type: "number", description: "salida: precio total de todos juntos (alternativa a precio)." },
+        comprador: { type: "string", description: "salida: a quién se vendió." }, kg: { type: "number", description: "salida: kilos vendidos en total, si se pesaron." }
       },
       required: ["rps"]
     }
@@ -232,6 +234,37 @@ const HERRAMIENTAS = [
       producto: { type: "string" }, dosis: { type: "string" }, motivo: { type: "string" },
       simular: { type: "boolean" } },
       required: ["id"] }
+  },
+  {
+    name: "campos",
+    description: "La empresa entera: sus campos con cabezas, vientres, parición (preñadas, criando, fallaron), " +
+      "toros y terminación de cada uno, los totales, y el stock consolidado por categoría. Para 'cuántas " +
+      "vacas tenemos en total', 'cómo viene la parición en los tres campos', 'qué campo tiene más terneros'. " +
+      "Vos estás parado en un campo; con esto ves los otros.",
+    input_schema: { type: "object", properties: { stock: { type: "boolean", description: "true: también el stock consolidado por categoría con kilos." } } }
+  },
+  {
+    name: "trasladar",
+    description: "Mueve animales de este campo a otro campo de la misma empresa, con todo su historial (pesadas, " +
+      "servicios, sanidad, notas). En el origen quedan como TRASLADADO. Primero con simular=true para ver " +
+      "avisos (por ejemplo una vaca con ternero al pie que no viaja) y confirmar.",
+    input_schema: { type: "object", properties: {
+      rps: { type: "array", items: { type: "string" } },
+      hasta: { type: "string", description: "Clave del campo de destino (ver campos)." },
+      desde: { type: "string", description: "Clave del campo de origen. Por defecto, este." },
+      fecha: { type: "string" }, motivo: { type: "string" }, simular: { type: "boolean" } }, required: ["rps", "hasta"] }
+  },
+  {
+    name: "finanzas",
+    description: "Lee el sistema financiero (IMPROLUX/VIDELA) si está enlazado: el resumen del mes, las " +
+      "transacciones (gastos e ingresos por concepto: SANIDAD, ALIMENTO, VENTA HACIENDA…), el stock valuado " +
+      "que tiene cargado, cuentas y cheques. Para 'cuánto gastamos en sanidad este ciclo', 'qué se vendió en " +
+      "agosto', 'cuánto vale el rodeo según el financiero'. Si no está enlazado, avisá.",
+    input_schema: { type: "object", properties: {
+      consulta: { type: "string", enum: ["resumen", "transacciones", "ganado", "cuentas", "cheques"] },
+      desde: { type: "string", description: "AAAA-MM-DD, para transacciones." }, hasta: { type: "string" },
+      concepto: { type: "string", description: "Filtrar por concepto (contiene)." }, texto: { type: "string", description: "Buscar en detalle o proveedor." },
+      limite: { type: "integer", description: "Cuántas transacciones devolver (default 200). Los totales siempre son de todas." } } }
   },
   {
     name: "recordar",
@@ -289,6 +322,8 @@ function errorClaro(e) {
 function crear(deps) {
   const { plantelMod, animalesMod, destinosMod, exportarMod, relevarMod, guardarTablero } = deps;
   const adjuntosMod = deps.adjuntosMod || require("./adjuntos.js");
+  const finanzasMod = deps.finanzasMod || require("./finanzas.js");
+  const empresasDe = typeof deps.empresas === "function" ? deps.empresas : () => deps.empresas || null;
   const CAMPOS = deps.CAMPOS || {};
   const modelo = deps.modelo || process.env.MODELO || "claude-opus-5";
   const esfuerzo = deps.esfuerzo || process.env.ESFUERZO || "high";
@@ -366,6 +401,9 @@ QUÉ HERRAMIENTA PARA QUÉ:
 · destinar: marcar a dónde va un animal (engorde/terminación, venta, reproductor, queda) o que ya salió. Nunca por SQL.
 · crear_tablero: algo para mirar en pantalla. exportar_archivo: algo para bajar (Excel, CSV, imprimir).
 · recordar: lo que el usuario te enseña del campo y va a servir siempre.
+· finanzas: el sistema financiero (IMPROLUX), si está enlazado: gastos por concepto, ventas, stock valuado. Cuando registrás una salida con precio (destinar salida), la venta se le manda sola.
+· campos: la empresa entera, campo por campo, cuando preguntan por el total o comparan campos. Vos estás parado en un campo: plantel, ficha y consultar miran sólo éste.
+· trasladar: mover animales a otro campo de la empresa. Simulá primero.
 · leer_adjunto / importar_adjunto: cuando mandan un archivo. Fotos y PDF los ves directo; planillas y textos llegan resumidos con un id.
 
 ARCHIVOS QUE TE MANDAN: primero decí en una línea qué es y qué tiene (una planilla de pesadas con 40 filas, la foto de una libreta con RP y pesos, un informe del veterinario). Después hacé lo que corresponda:
@@ -422,7 +460,7 @@ ${cal.cortes ? `Bloques de la parición en curso: cabeza hasta ${cal.cortes.CABE
   const instrucciones = (db, campoNombre) => parteEstable(db, campoNombre) + "\n\n" + parteVolatil(db);
 
   // ── herramientas: qué hace cada una ────────────────────────────────────
-  function ejecutar(db, nombre, input, ctx) {
+  async function ejecutar(db, nombre, input, ctx) {
     const usuario = ctx.usuario || null;
     switch (nombre) {
       case "plantel": {
@@ -465,9 +503,23 @@ ${cal.cortes ? `Bloques de la parición en curso: cabeza hasta ${cal.cortes.CABE
         if (!rps.length) throw new Error("Falta al menos un RP");
         const op = { motivo: input.motivo, nota: input.nota, temporada: input.temporada, usuario: usuario || "bot", fecha: input.fecha, precio: input.precio };
         if (input.accion === "sacar") return { resultados: rps.map(rp => destinosMod.sacar(db, rp, input.temporada)) };
-        if (input.accion === "salida") return { resultados: rps.map(rp => destinosMod.concretar(db, rp, op)) };
+        if (input.accion === "salida") return deps.registrarSalida
+          ? deps.registrarSalida(db, { rps, fecha: input.fecha, precio: input.precio, precio_total: input.precio_total, comprador: input.comprador, kg: input.kg, temporada: input.temporada, campo: ctx.campoKey })
+          : { resultados: rps.map(rp => destinosMod.concretar(db, rp, op)) };
         if (!input.destino) throw new Error("Falta el destino");
         return destinosMod.marcarVarios(db, rps, input.destino, op);
+      }
+      case "finanzas": { const em = empresasDe(); return finanzasMod.consultar(db, input, em && ctx.campoKey ? em.finanzasDe(ctx.campoKey) : undefined); }
+      case "campos": {
+        const em = empresasDe(); if (!em) throw new Error("No hay empresas configuradas");
+        const e = em.empresaDe(ctx.campoKey);
+        const r = em.resumen(e.key);
+        return input.stock ? { ...r, stock: em.rodeoResumen(e.key) } : r;
+      }
+      case "trasladar": {
+        if (ctx.soloLectura && !input.simular) throw new Error("Esta sesión es de sólo lectura");
+        const em = empresasDe(); if (!em) throw new Error("No hay empresas configuradas");
+        return em.trasladar({ rps: input.rps, desde: input.desde || ctx.campoKey, hasta: input.hasta, fecha: input.fecha, motivo: input.motivo, simular: input.simular, usuario: usuario || "bot" });
       }
       case "leer_adjunto": return adjuntosMod.leer(db, input);
       case "importar_adjunto":
@@ -520,6 +572,9 @@ ${cal.cortes ? `Bloques de la parición en curso: cabeza hasta ${cal.cortes.CABE
     if (nombre === "crear_tablero") return { tipo: "tablero", herramienta: nombre, slug: out.slug, url: out.url };
     if (nombre === "exportar_archivo") return { tipo: "archivo", herramienta: nombre, nombre: out.nombre, url: out.url, filas: out.filas };
     if (nombre === "destinar") return { tipo: "escritura", herramienta: nombre, que: out.mensaje || `destinar ${input.accion || "marcar"}`, cambios: (out.hechos || out.resultados || []).length };
+    if (nombre === "finanzas") return { tipo: "consulta", herramienta: nombre, porque: `finanzas: ${input.consulta || "resumen"}`, filas: out && out.total };
+    if (nombre === "campos") return { tipo: "consulta", herramienta: nombre, porque: "la empresa entera", filas: out && out.campos && out.campos.length };
+    if (nombre === "trasladar") return { tipo: input.simular ? "consulta" : "escritura", herramienta: nombre, que: out.mensaje, cambios: out.bien };
     if (nombre === "leer_adjunto") return { tipo: "consulta", herramienta: nombre, porque: `leer adjunto ${input.id}`, filas: out.mostradas };
     if (nombre === "importar_adjunto") return { tipo: input.simular ? "consulta" : "escritura", herramienta: nombre, que: `importar ${out.adjunto || input.id}`, cambios: out.bien, porque: out.mensaje };
     if (nombre === "recordar") return { tipo: "memoria", herramienta: nombre, que: out.mensaje };
@@ -536,6 +591,9 @@ ${cal.cortes ? `Bloques de la parición en curso: cabeza hasta ${cal.cortes.CABE
     if (nombre === "crear_tablero") return `armo el tablero "${input.titulo}"`;
     if (nombre === "exportar_archivo") return `armo el archivo "${input.titulo}"`;
     if (nombre === "destinar") return input.accion === "sacar" ? `le saco el destino a ${(input.rps || []).length} animal(es)` : input.accion === "salida" ? `registro la salida de ${(input.rps || []).length} animal(es)` : `marco ${(input.rps || []).length} animal(es) → ${input.destino}`;
+    if (nombre === "finanzas") return `consulto el financiero (${input.consulta || "resumen"})`;
+    if (nombre === "campos") return "miro todos los campos de la empresa";
+    if (nombre === "trasladar") return `${input.simular ? "reviso el traslado de" : "traslado"} ${(input.rps || []).length} animal(es) a ${input.hasta}`;
     if (nombre === "leer_adjunto") return "leo más del archivo";
     if (nombre === "importar_adjunto") return input.simular ? "reviso la planilla" : "cargo la planilla";
     if (nombre === "recordar") return input.olvidar_id ? "borro una memoria" : "anoto en la memoria";
@@ -609,7 +667,7 @@ ${cal.cortes ? `Bloques de la parición en curso: cabeza hasta ${cal.cortes.CABE
         emitir({ tipo: "paso", herramienta: u.name, texto: describir(u.name, u.input || {}) });
         let out;
         try {
-          out = ejecutar(db, u.name, u.input || {}, ctx);
+          out = await ejecutar(db, u.name, u.input || {}, ctx);
           pasos.push(pasoDe(u.name, u.input || {}, out || {}));
         } catch (e) {
           out = { error: e.message };
