@@ -133,9 +133,10 @@ const HERRAMIENTAS = [
     input_schema: {
       type: "object",
       properties: {
-        tipo: { type: "string", enum: ["pesadas", "sanidad", "nacimientos", "mediciones", "notas"] },
+        tipo: { type: "string", enum: ["pesadas", "sanidad", "nacimientos", "identificar", "mediciones", "notas"] },
         filas: { type: "array", items: { type: "object" }, description:
-          "pesadas: [{rp, peso, fecha?, contexto?}] · nacimientos: [{rp, madre_rp, fecha_nac, sexo, pelo?, peso_nac?, padre_rp?, chip?, observaciones?}] · " +
+          "pesadas: [{rp, peso, fecha?, contexto?}] · nacimientos: [{rp?, caravana_control?, caravana_color?, madre_rp, fecha_nac, sexo, pelo?, peso_nac?, padre_rp?, chip?, observaciones?}] " +
+          "(sin rp queda con RP provisorio C+control) · identificar: [{control? | rp_actual?, color?, rp?, chip?}] (asigna el RP definitivo y/o el chip) · " +
           "mediciones: [{rp, valor, tipo?, fecha?}] · notas: [{rp, texto, fecha?}] · sanidad: no usa filas, usa rps/lote_id/todos." },
         rps: { type: "array", items: { type: "string" }, description: "sanidad: a quiénes." },
         lote_id: { type: "integer", description: "sanidad: a todo un lote." },
@@ -392,6 +393,7 @@ CÓMO TRABAJAR:
 · Cuando te corrigen ("la 23 no tiene ternero", "el RP correcto es otro") no es una pregunta: es una corrección. Verificá qué hay cargado, mostrale lo que encontraste, y proponé el cambio concreto antes de hacerlo.
 · Cuando el usuario te cuenta algo del campo que vale para siempre ("al potrero 7 le decimos La Loma", "Hércules ya no se usa", "las vaquillonas se sirven a los 15 meses"), guardalo con recordar y decile que lo anotaste.
 · El RP se escribe de cualquier forma: "011", "11", "b 332", "B332" son el mismo animal. Si un SELECT exacto no lo encuentra, usá buscar o ficha.
+· CÓMO SE IDENTIFICA UN ANIMAL EN ESTE CAMPO: al nacer, el ternero recibe una caravana control (un número al azar y un color). Se carga el nacimiento con esa control (relevar nacimientos con caravana_control y caravana_color, sin rp) y queda con un RP provisorio "C"+número, marcado como sin RP. Más adelante se le asigna el RP definitivo y se le pone el chip: relevar identificar con {control, rp, chip}. "La control 150 es la 2077" o "al C150 ponele el chip 3201…" van por ahí. Si hay dos con el mismo número de control, preguntá el color. Todo lo que tenía (madre, pesadas, notas) sigue con el animal.
 · Podés llamar varias herramientas a la vez cuando son independientes.
 
 ARMAR TABLEROS: consultá los datos primero y ponelos ya calculados adentro. Mandá sólo el contenido; el sistema pone estilos y encabezado. Después decile en qué URL quedó y qué muestra.
@@ -498,11 +500,12 @@ ${cal.cortes ? `Bloques de la parición en curso: cabeza hasta ${cal.cortes.CABE
     const filas = Array.isArray(input.filas) ? input.filas : [];
     if (t === "pesadas") return relevarMod.pesadas(db, { filas, fecha: input.fecha, contexto: input.contexto, simular: input.simular, usuario: "bot" });
     if (t === "nacimientos") return relevarMod.nacimientos(db, { filas, simular: input.simular, usuario: "bot" });
+    if (t === "identificar") return relevarMod.identificar(db, { filas, simular: input.simular, usuario: "bot" });
     if (t === "mediciones") return relevarMod.mediciones(db, { filas, tipo: input.tipo_medicion, fecha: input.fecha, simular: input.simular });
     if (t === "notas") return relevarMod.notas(db, plantelMod, { filas, fecha: input.fecha, simular: input.simular, usuario: "bot" });
     if (t === "sanidad") return relevarMod.sanidad(db, { rps: input.rps, lote_id: input.lote_id, todos: input.todos, fecha: input.fecha,
       producto: input.producto, dosis: input.dosis, motivo: input.motivo, simular: input.simular });
-    throw new Error(`Tipo "${input.tipo}" no. Puede ser pesadas, sanidad, nacimientos, mediciones o notas`);
+    throw new Error(`Tipo "${input.tipo}" no. Puede ser pesadas, sanidad, nacimientos, identificar, mediciones o notas`);
   }
 
   // Cómo se cuenta cada paso en el tablero.

@@ -117,7 +117,8 @@ entendió, qué RP no reconoce y qué no cierra; *Confirmar* escribe.
 
 - **Pesadas**: se pega `RP peso`, una línea por animal, como está en la libreta. Avisa si un peso bajó más de 12% o subió más de 3 kg/día respecto de la pesada anterior, y no repite una pesada ya cargada.
 - **Sanidad**: un producto a una lista de RP, a un lote o a todos.
-- **Nacimientos**: `RP-ternero madre fecha sexo peso [pelaje] [padre]`. Avisa si la madre no existe o ya tiene cría este año.
+- **Nacimientos**: `caravana-control madre fecha sexo peso [pelaje] [padre]`. El ternero queda con la caravana control (número y color) y un RP provisorio `C`+número, marcado "sin RP" en Nacimientos. Avisa si la madre no existe o ya tiene cría este año.
+- **Asignar RP / chip**: `control RP-definitivo [chip]`. Es el paso siguiente: el RP provisorio se reemplaza por el definitivo y se carga el chip; madre, pesadas y notas siguen con el animal. También desde la ficha del ternero. Si hay dos controles con el mismo número, se distingue por color.
 - **Mediciones**: CC, CE, altura, frame.
 - **Notas**: `RP texto`. Las palabras clave (renga, mala madre, abortó…) se entienden solas.
 - **Importar planilla**: un CSV de otro sistema, de la balanza o la planilla de RODEO llenada. Detecta separador y columnas por sinónimos.

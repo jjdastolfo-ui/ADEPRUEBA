@@ -140,19 +140,40 @@ function sanidad(db, { rps, lote_id, todos, fecha, producto, dosis, motivo, simu
 // ── NACIMIENTOS ──────────────────────────────────────────────────────────────
 // Cada ternero nuevo: el animal, su pesada de nacimiento y, si hay, la nota.
 
+// El RP provisorio de un ternero con caravana control: "C" + número. Si ya
+// hay uno igual (un número al azar se puede repetir), se le agrega el color o un sufijo.
+function rpProvisorio(db, control, color) {
+  const base = "C" + String(control).trim().toUpperCase().replace(/^C/, "");
+  const existe = rp => !!db.prepare("SELECT 1 FROM animales WHERE upper(rp)=upper(?)").get(rp);
+  if (!existe(base)) return base;
+  const conColor = color ? `${base}-${String(color).trim().toUpperCase().slice(0, 3)}` : null;
+  if (conColor && !existe(conColor)) return conColor;
+  for (let i = 2; i < 100; i++) if (!existe(`${base}.${i}`)) return `${base}.${i}`;
+  throw new Error(`No pude armar un RP provisorio para la control ${control}`);
+}
+
 function nacimientos(db, { filas, simular, usuario }) {
   const out = [];
-  const insA = db.prepare(`INSERT INTO animales (rp, chip, sexo, categoria, estado, fecha_nac, pelo, raza, madre_rp, padre_rp, notas)
-    VALUES (?,?,?,?, 'ACTIVO', ?,?,?,?,?,?)`);
+  const insA = db.prepare(`INSERT INTO animales (rp, chip, sexo, categoria, estado, fecha_nac, pelo, raza, madre_rp, padre_rp, notas, caravana_control, caravana_color, rp_provisorio)
+    VALUES (?,?,?,?, 'ACTIVO', ?,?,?,?,?,?,?,?,?)`);
   const insP = db.prepare("INSERT INTO pesadas (animal_id, fecha, peso, contexto) VALUES (?,?,?,'NACIMIENTO')");
   const hacer = () => {
     for (const [i, f] of (filas || []).entries()) {
-      const r = { fila: i + 1, rp: String(f.rp || "").trim(), madre: String(f.madre_rp || f.madre || "").trim(), ok: false, avisos: [] };
+      const control = String(f.caravana_control || f.control || "").trim() || null;
+      const color = String(f.caravana_color || f.color_caravana || "").trim() || null;
+      const r = { fila: i + 1, rp: String(f.rp || "").trim(), madre: String(f.madre_rp || f.madre || "").trim(), control, color, ok: false, avisos: [] };
       out.push(r);
       const fe = fechaIso(f.fecha_nac || f.fecha);
       const sexo = sexoNorm(f.sexo);
       const pn = numero(f.peso_nac != null ? f.peso_nac : f.peso);
-      if (!r.rp) { r.error = "Sin RP para el ternero"; continue; }
+      // Sin RP definitivo: queda con la caravana control y un RP provisorio.
+      let provisorio = false;
+      if (!r.rp && control) {
+        try { r.rp = rpProvisorio(db, control, color); provisorio = true; } catch (e) { r.error = e.message; continue; }
+        const otra = db.prepare("SELECT rp, caravana_color FROM animales WHERE rp_provisorio=1 AND caravana_control=? AND upper(COALESCE(estado,'ACTIVO'))='ACTIVO'").all(control);
+        if (otra.length) r.avisos.push(`ya hay ${otra.length} ternero(s) con control ${control} sin RP (${otra.map(o => o.rp + (o.caravana_color ? " " + o.caravana_color : "")).join(", ")}): al identificar, decí el color`);
+      }
+      if (!r.rp) { r.error = "Sin RP ni caravana control para el ternero"; continue; }
       if (!fe) { r.error = "Sin fecha de nacimiento (o no la entiendo)"; continue; }
       if (fe > hoyIso()) { r.error = `La fecha ${fe} es futura`; continue; }
       if (!sexo) { r.error = "Sin sexo (M/H)"; continue; }
@@ -172,10 +193,11 @@ function nacimientos(db, { filas, simular, usuario }) {
       if (pn != null && (pn < 12 || pn > 70)) r.avisos.push(`peso al nacer raro: ${pn}`);
       if (pn == null) r.avisos.push("sin peso al nacer");
       const padre = String(f.padre_rp || f.padre || "").trim() || null;
-      r.ok = true; r.fecha_nac = fe; r.sexo = sexo; r.peso_nac = pn; r.padre = padre;
+      r.ok = true; r.fecha_nac = fe; r.sexo = sexo; r.peso_nac = pn; r.padre = padre; r.provisorio = provisorio;
       if (!simular) {
         const id = insA.run(r.rp, f.chip || null, sexo, sexo === "M" ? "TERNERO" : "TERNERA", fe, peloNorm(f.pelo || f.pelaje),
-          f.raza || "A. ANGUS", madre ? madre.rp : (r.madre || null), padre, f.observaciones || f.obs || f.notas || null).lastInsertRowid;
+          f.raza || "A. ANGUS", madre ? madre.rp : (r.madre || null), padre, f.observaciones || f.obs || f.notas || null,
+          control, color ? String(color).toUpperCase() : null, provisorio ? 1 : 0).lastInsertRowid;
         if (pn != null) insP.run(id, fe, pn);
         r.hecho = true;
       }
@@ -183,6 +205,86 @@ function nacimientos(db, { filas, simular, usuario }) {
   };
   if (simular) hacer(); else db.transaction(hacer)();
   return resumen(out, simular, "nacimiento");
+}
+
+// ── IDENTIFICAR ──────────────────────────────────────────────────────────────
+// El paso del medio: al ternero que nació con caravana control se le asigna
+// el RP definitivo y, cuando se lo pone, el chip. Todo lo que ya tenía
+// (pesadas, notas, madre) sigue con él.
+//   filas: [{ control?, color?, rp_actual?, rp?, chip? }]
+//   · control (+ color si hay dos iguales) o rp_actual dicen de quién se trata.
+//   · rp es el definitivo; chip la caravana electrónica. Puede venir uno solo.
+
+function encontrarParaIdentificar(db, f) {
+  const control = String(f.control || f.caravana_control || "").trim();
+  const color = String(f.color || f.caravana_color || "").trim().toUpperCase();
+  const actual = String(f.rp_actual || f.actual || "").trim();
+  if (actual) {
+    const a = animalesMod.porRp(db, actual);
+    return a ? { animal: a } : { error: `No existe el animal ${actual}` };
+  }
+  if (!control) return { error: "Falta la caravana control (o el RP actual) para saber de quién se trata" };
+  let cands = db.prepare(`SELECT * FROM animales WHERE caravana_control=? AND upper(COALESCE(estado,'ACTIVO'))='ACTIVO' ORDER BY rp_provisorio DESC, id DESC`).all(control.replace(/^C/i, ""));
+  if (!cands.length) {
+    // Quizá escribieron el RP provisorio ("C150") o un control con la C adelante.
+    const a = animalesMod.porRp(db, /^C/i.test(control) ? control : "C" + control);
+    if (a) cands = [a];
+  }
+  if (!cands.length) return { error: `No hay ningún ternero con caravana control ${control}` };
+  if (cands.length > 1) {
+    const porColor = color ? cands.filter(c => String(c.caravana_color || "").toUpperCase().startsWith(color.slice(0, 3))) : [];
+    if (porColor.length === 1) return { animal: porColor[0] };
+    return { error: `Hay ${cands.length} con control ${control}: ${cands.map(c => `${c.rp}${c.caravana_color ? " (" + c.caravana_color + ")" : ""}, nacido ${c.fecha_nac}`).join("; ")}. Decime el color o el RP provisorio.` };
+  }
+  return { animal: cands[0] };
+}
+
+function identificar(db, { filas, simular, usuario }) {
+  const out = [];
+  const existeRp = rp => db.prepare("SELECT rp FROM animales WHERE upper(rp)=upper(?)").get(rp);
+  const hacer = () => {
+    for (const [i, f] of (filas || []).entries()) {
+      const r = { fila: i + 1, control: f.control || f.caravana_control || null, rp_nuevo: String(f.rp || f.rp_nuevo || "").trim() || null,
+        chip: String(f.chip || "").trim() || null, ok: false, avisos: [] };
+      out.push(r);
+      if (!r.rp_nuevo && !r.chip) { r.error = "No hay nada para asignar: falta el RP definitivo o el chip"; continue; }
+      const h = encontrarParaIdentificar(db, f);
+      if (h.error) { r.error = h.error; continue; }
+      const a = h.animal;
+      r.rp_actual = a.rp; r.era_provisorio = !!a.rp_provisorio; r.categoria = a.categoria;
+      if (r.rp_nuevo) {
+        if (r.rp_nuevo.toUpperCase() === String(a.rp).toUpperCase()) { r.avisos.push("ya tenía ese RP"); r.rp_nuevo = null; }
+        else {
+          const otro = existeRp(r.rp_nuevo);
+          if (otro) { r.error = `El RP ${r.rp_nuevo} ya lo tiene otro animal`; continue; }
+          if (!a.rp_provisorio) r.avisos.push(`${a.rp} ya tenía RP definitivo: se cambia a ${r.rp_nuevo}`);
+        }
+      }
+      if (r.chip) {
+        const otro = db.prepare("SELECT rp FROM animales WHERE chip=? AND id<>?").get(r.chip, a.id);
+        if (otro) { r.error = `El chip ${r.chip} ya está en el animal ${otro.rp}`; continue; }
+        if (a.chip && a.chip !== r.chip) r.avisos.push(`tenía el chip ${a.chip}: se reemplaza`);
+        if (!/^\d{12,16}$/.test(r.chip)) r.avisos.push("el chip no tiene el largo habitual (15 dígitos)");
+      }
+      r.ok = true;
+      if (!simular) {
+        const viejo = a.rp;
+        if (r.rp_nuevo) {
+          db.prepare("UPDATE animales SET rp=?, rp_provisorio=0 WHERE id=?").run(r.rp_nuevo, a.id);
+          // Lo que lo nombraba por el RP viejo sigue con él.
+          for (const [tabla, col] of [["notas_campo", "animal_rp"], ["destinos", "animal_rp"], ["animales", "madre_rp"], ["animales", "padre_rp"]]) {
+            try { db.prepare(`UPDATE ${tabla} SET ${col}=? WHERE upper(${col})=upper(?)`).run(r.rp_nuevo, viejo); } catch (e) {}
+          }
+        }
+        if (r.chip) db.prepare("UPDATE animales SET chip=? WHERE id=?").run(r.chip, a.id);
+        r.hecho = true;
+      }
+    }
+  };
+  if (simular) hacer(); else db.transaction(hacer)();
+  const res = resumen(out, simular, "identificación");
+  res.mensaje = res.mensaje.replace("identificaciónes", "identificaciones");
+  return res;
 }
 
 // ── MEDICIONES ───────────────────────────────────────────────────────────────
@@ -270,7 +372,10 @@ function parsearCsv(texto) {
 
 // Cómo puede venir escrito cada campo.
 const SINONIMOS = {
-  rp: ["rp", "caravana", "numero", "número", "nro", "id", "animal", "identificacion", "identificación", "tag", "caravana_numero", "caravana numero", "rp ternero", "ternero"],
+  rp: ["rp", "numero", "número", "nro", "id", "animal", "identificacion", "identificación", "tag", "rp ternero", "ternero", "rp definitivo", "rp nuevo"],
+  caravana_control: ["caravana_control", "caravana control", "control", "caravana_numero", "caravana numero", "caravana", "nro caravana", "numero caravana", "número caravana"],
+  caravana_color: ["caravana_color", "caravana color", "color caravana", "color de caravana", "color"],
+  rp_actual: ["rp_actual", "rp actual", "rp provisorio", "provisorio", "rp viejo"],
   peso: ["peso", "kg", "kilos", "peso kg", "peso_kg", "pesada", "peso actual", "ultimo peso", "último peso"],
   fecha: ["fecha", "date", "fecha pesada", "fecha_pesada", "dia", "día"],
   contexto: ["contexto", "tipo", "evento", "momento"],
@@ -305,7 +410,8 @@ function mapearEncabezados(encabezados, campos) {
 
 const CAMPOS_POR_TIPO = {
   pesadas: ["rp", "peso", "fecha", "contexto"],
-  nacimientos: ["rp", "madre_rp", "fecha_nac", "sexo", "pelo", "peso_nac", "padre_rp", "chip", "observaciones"],
+  nacimientos: ["rp", "caravana_control", "caravana_color", "madre_rp", "fecha_nac", "sexo", "pelo", "peso_nac", "padre_rp", "chip", "observaciones"],
+  identificar: ["caravana_control", "caravana_color", "rp_actual", "rp", "chip"],
   sanidad: ["rp", "fecha", "producto", "dosis", "motivo"],
   mediciones: ["rp", "fecha", "tipo", "valor"],
   notas: ["rp", "fecha", "observaciones"]
@@ -326,7 +432,8 @@ function importarCsv(db, plantelMod, { texto, tipo, mapa, fecha, contexto, produ
   }
   if (!CAMPOS_POR_TIPO[t]) throw new Error(`Tipo "${t}" no. Puede ser: ${Object.keys(CAMPOS_POR_TIPO).join(", ")}`);
   const m = { ...mapearEncabezados(enc, CAMPOS_POR_TIPO[t]), ...(mapa || {}) };
-  if (!m.rp) throw new Error(`No encuentro la columna del RP. Encabezados: ${enc.join(", ")}`);
+  if (!m.rp && !(t === "nacimientos" && m.caravana_control) && !(t === "identificar" && (m.caravana_control || m.rp_actual)))
+    throw new Error(`No encuentro la columna del RP. Encabezados: ${enc.join(", ")}`);
   const filas = csv.filas.map(f => Object.fromEntries(Object.entries(m).map(([campo, col]) => [campo, f[col]])));
   const base = { encabezados: enc, separador: csv.sep, tipo: t, mapa: m, leidas: csv.filas.length };
 
@@ -334,6 +441,7 @@ function importarCsv(db, plantelMod, { texto, tipo, mapa, fecha, contexto, produ
   if (t === "pesadas") r = pesadas(db, { filas, fecha, contexto, simular, usuario });
   else if (t === "nacimientos") r = nacimientos(db, { filas, simular, usuario });
   else if (t === "sanidad") r = sanidad(db, { rps: filas.map(f => f.rp), fecha: fecha || filas[0].fecha, producto: producto || filas[0].producto, dosis: dosis || filas[0].dosis, motivo: motivo || filas[0].motivo, simular });
+  else if (t === "identificar") r = identificar(db, { filas: filas.map(f => ({ control: f.caravana_control, color: f.caravana_color, rp_actual: f.rp_actual, rp: f.rp, chip: f.chip })), simular, usuario });
   else if (t === "mediciones") r = mediciones(db, { filas, fecha, simular });
   else r = notas(db, plantelMod, { filas: filas.map(f => ({ rp: f.rp, texto: f.observaciones, fecha: f.fecha })), fecha, simular, usuario });
   return { ...base, ...r };
@@ -380,4 +488,4 @@ function resumen(out, simular, que) {
   };
 }
 
-module.exports = { pesadas, sanidad, nacimientos, mediciones, notas, importarCsv, parsearCsv, parsearLineas, planilla, fechaIso, numero, SINONIMOS, CAMPOS_POR_TIPO };
+module.exports = { pesadas, sanidad, nacimientos, identificar, mediciones, notas, importarCsv, parsearCsv, parsearLineas, planilla, rpProvisorio, fechaIso, numero, SINONIMOS, CAMPOS_POR_TIPO };

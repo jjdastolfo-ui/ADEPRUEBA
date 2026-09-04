@@ -383,8 +383,29 @@ app.post("/api/relevar/sanidad", (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 app.post("/api/relevar/nacimientos", (req, res) => {
-  try { res.json(relevarMod.nacimientos(dbDe(req), req.body)); }
+  try {
+    const b = { ...req.body };
+    // Un color de caravana para todas las filas que no lo traigan.
+    if (b.color && Array.isArray(b.filas)) b.filas = b.filas.map(f => ({ ...f, caravana_color: f.caravana_color || b.color }));
+    res.json(relevarMod.nacimientos(dbDe(req), b));
+  }
   catch (e) { res.status(400).json({ error: e.message }); }
+});
+// Identificar: "control nuevoRP [chip]" o "control chip" o "rpActual nuevoRP [chip]", una línea por animal.
+app.post("/api/relevar/identificar", (req, res) => {
+  try {
+    let filas = req.body.filas;
+    if (req.body.texto) filas = relevarMod.parsearLineas(req.body.texto).map(l => {
+      const t = [l.rp, l.valor, ...l.extra].filter(Boolean);
+      const chip = t.find((x, i) => i > 0 && /^\d{12,16}$/.test(x));
+      const resto = t.filter(x => x !== chip);
+      const f = { chip, color: req.body.color || undefined };
+      if (req.body.por === "rp") f.rp_actual = resto[0]; else f.control = resto[0];
+      if (resto[1]) f.rp = resto[1];
+      return f;
+    });
+    res.json(relevarMod.identificar(dbDe(req), { filas, simular: req.body.simular, usuario: req.body.usuario }));
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 app.post("/api/relevar/mediciones", (req, res) => {
   try {

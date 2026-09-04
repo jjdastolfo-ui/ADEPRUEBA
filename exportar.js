@@ -53,7 +53,7 @@ const COLUMNAS = {
     { k: "bloque", t: "Bloque" }, { k: "se_atrasa", t: "Se atrasa" }, { k: "notas_texto", t: "Notas", ancho: 40 }
   ],
   animales: [
-    { k: "rp", t: "RP", ancho: 9 }, { k: "nombre", t: "Nombre" }, { k: "chip", t: "Caravana elec." }, { k: "hbu", t: "HBA" }, { k: "registro", t: "Registro" },
+    { k: "rp", t: "RP", ancho: 9 }, { k: "nombre", t: "Nombre" }, { k: "chip", t: "Caravana elec." }, { k: "caravana_control", t: "Caravana control" }, { k: "caravana_color", t: "Color control" }, { k: "hbu", t: "HBA" }, { k: "registro", t: "Registro" },
     { k: "sexo_texto", t: "Sexo" }, { k: "categoria", t: "Categoría" }, { k: "estado", t: "Estado" },
     { k: "fecha_nac", t: "Nacimiento", tipo: F }, { k: "edad_meses", t: "Edad (m)", tipo: E },
     { k: "pelo", t: "Pelaje" }, { k: "raza", t: "Raza" }, { k: "madre_rp", t: "Madre" }, { k: "padre_rp", t: "Padre" },
@@ -64,7 +64,8 @@ const COLUMNAS = {
     { k: "notas", t: "Notas", ancho: 40 }
   ],
   nacimientos: [
-    { k: "rp", t: "RP", ancho: 9 }, { k: "fecha_nac", t: "Nacimiento", tipo: F }, { k: "bloque", t: "Bloque" },
+    { k: "rp", t: "RP", ancho: 9 }, { k: "rp_provisorio_texto", t: "RP" }, { k: "caravana_control", t: "Caravana control" }, { k: "caravana_color", t: "Color" },
+    { k: "fecha_nac", t: "Nacimiento", tipo: F }, { k: "bloque", t: "Bloque" },
     { k: "sexo_texto", t: "Sexo" }, { k: "pelo", t: "Pelaje" }, { k: "madre_rp", t: "Madre" }, { k: "padre_rp", t: "Padre" },
     { k: "peso_nac", t: "Peso nac", tipo: D }, { k: "destete", t: "Destete", tipo: D },
     { k: "peso_actual", t: "Último peso", tipo: D }, { k: "ultima_pesada", t: "Última pesada", tipo: F },
@@ -178,7 +179,7 @@ function datos(db, mods, clave, opciones = {}) {
       const anio = opciones.anio || p.anio_paricion;
       const filas = conSexo(animalesMod.listar(db, { estado: "TODOS" })
         .filter(a => String(a.fecha_nac || "").startsWith(anio) && a.madre_rp)
-        .map(a => ({ ...a, bloque: plantelMod.bloqueDe(a.fecha_nac, p.calendario.cortes) })));
+        .map(a => ({ ...a, bloque: plantelMod.bloqueDe(a.fecha_nac, p.calendario.cortes), rp_provisorio_texto: a.rp_provisorio ? "provisorio" : "definitivo" })));
       return { filas, subtitulo: `Nacidos en ${anio} · ${filas.length} terneros` };
     }
     case "recria": {

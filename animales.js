@@ -37,6 +37,12 @@ function init(db) {
   // nombre o por RP. La columna se agrega si la base vieja no la tiene.
   const cols = db.prepare("PRAGMA table_info(animales)").all().map(c => c.name);
   if (!cols.includes("nombre")) db.exec("ALTER TABLE animales ADD COLUMN nombre TEXT");
+  // Al nacer, el ternero lleva una caravana control (número al azar y color)
+  // hasta que se le asigna el RP definitivo y el chip. Mientras tanto su RP
+  // es provisorio ("C" + número) y rp_provisorio = 1.
+  if (!cols.includes("caravana_control")) db.exec("ALTER TABLE animales ADD COLUMN caravana_control TEXT");
+  if (!cols.includes("caravana_color")) db.exec("ALTER TABLE animales ADD COLUMN caravana_color TEXT");
+  if (!cols.includes("rp_provisorio")) db.exec("ALTER TABLE animales ADD COLUMN rp_provisorio INTEGER DEFAULT 0");
 }
 
 // ── TOROS ────────────────────────────────────────────────────────────────────
@@ -160,7 +166,7 @@ function buscar(db, q, opciones = {}) {
 
   const todos = db.prepare(`
     SELECT a.id, a.rp, a.nombre, a.chip, a.hbu, a.registro, a.sexo, a.categoria, a.estado, a.fecha_nac, a.pelo,
-           a.madre_rp, a.padre_rp, a.lote, a.notas,
+           a.madre_rp, a.padre_rp, a.lote, a.notas, a.caravana_control, a.caravana_color, a.rp_provisorio,
       (SELECT peso FROM pesadas p WHERE p.animal_id=a.id ORDER BY p.fecha DESC, p.id DESC LIMIT 1) peso_actual,
       (SELECT COUNT(*) FROM animales h WHERE upper(COALESCE(h.madre_rp,''))=upper(a.rp)) crias,
       (SELECT GROUP_CONCAT(texto, ' | ') FROM notas_campo n WHERE upper(n.animal_rp)=upper(a.rp)) notas_campo
@@ -169,7 +175,7 @@ function buscar(db, q, opciones = {}) {
   const puntuados = [];
   for (const a of todos) {
     let puntos = 0, por = null;
-    const campos = [["RP", a.rp], ["nombre", a.nombre], ["caravana", a.chip], ["HBA", a.hbu], ["registro", a.registro]];
+    const campos = [["RP", a.rp], ["nombre", a.nombre], ["caravana", a.chip], ["control", a.caravana_control], ["HBA", a.hbu], ["registro", a.registro]];
     for (const [nombre, v] of campos) {
       if (v == null || v === "") continue;
       const nv = norm(v), cv = compacto(v);
@@ -252,6 +258,7 @@ function ficha(db, rp, opciones = {}) {
   return {
     ok: true,
     rp: a.rp, nombre: a.nombre || null, chip: a.chip, hba: a.hbu || a.registro || null, sexo: a.sexo, categoria: a.categoria,
+    caravana_control: a.caravana_control || null, caravana_color: a.caravana_color || null, rp_provisorio: !!a.rp_provisorio,
     estado: a.estado || "ACTIVO", fecha_nac: a.fecha_nac, pelo: a.pelo, raza: a.raza,
     edad_meses: (edadM != null && edadM >= 0 && edadM < 300) ? edadM : null,
     madre: a.madre_rp, madre_existe: !!madre, padre: a.padre_rp, padre_existe: !!padre,
