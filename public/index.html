@@ -401,7 +401,8 @@ const VISTAS = {
     {k:'categoria',t:'Categoría',cls:'mut',oculta:1}
   ]},
   nac: { titulo:'Nacimientos', conjunto:'nacimientos', cols:[
-    {k:'rp',t:'RP',cls:'rp'},
+    {k:'rp',t:'RP',cls:'rp',fmt:(v,f)=>f.rp_provisorio?`<span style="color:#B8860B">${esc(v)}</span> <span class="tag t-cola">sin RP</span>`:esc(v)},
+    {k:'caravana_control',t:'Caravana control',fmt:(v,f)=>v?`<b>${esc(v)}</b>${f.caravana_color?' <span class="mut">'+esc(f.caravana_color)+'</span>':''}`:'<span class="mut">—</span>'},
     {k:'fecha_nac',t:'Nacimiento',cls:'mut',fmt:v=>fec(v)||'—'},
     {k:'bloque',t:'Bloque',fmt:v=>tag(v)},
     {k:'sexo',t:'Sexo',fmt:v=>sexo(v)},
@@ -616,6 +617,7 @@ function pintar(){
         [f.filter(a=>String(a.sexo||'').startsWith('H')).length,'Hembras','',''],
         [pb.CABEZA||0,'Cabeza','bien',''],[pb.CUERPO||0,'Cuerpo','',''],[(pb.COLA||0)+(pb.TARDIA||0),'Cola y tardía','',''],
         [R.prenadas||0,'Por parir','',''],
+        [f.filter(a=>a.rp_provisorio).length,'Sin RP definitivo',f.some(a=>a.rp_provisorio)?'oro':'',''],
         [sinPn,'Sin peso al nacer',sinPn?'al':'','']
       ]; })()
     : vista==='recria' ? (()=>{ const f=datosDe('recria'); const g=f.map(a=>a.gdp_destete).filter(x=>x!=null); const sp=f.filter(a=>a.dias_sin_pesar==null||a.dias_sin_pesar>90).length; return [
@@ -773,7 +775,7 @@ function buscarGlobal(){
       gsSel = gsHits.length?0:-1;
       box.innerHTML = gsHits.length ? gsHits.map((a,i)=>`<div class="r ${i===gsSel?'sel':''}" onmousedown="irA('${esc(a.rp)}')">
         <b>${esc(a.rp)}</b>
-        <span class="d">${a.nombre?'<b>'+esc(a.nombre)+'</b> · ':''}${esc(a.categoria||'')} · ${sexo(a.sexo)}${a.pelo?' · '+esc(a.pelo):''}${a.fecha_nac?' · nac. '+fec(a.fecha_nac):''}${a.peso_actual?' · '+a.peso_actual+' kg':''}${a.madre_rp?' · madre '+esc(a.madre_rp):''}${a.padre_rp?' · padre '+esc(a.padre_rp):''}${a.estado&&a.estado!=='ACTIVO'?' · <span class="al">'+esc(a.estado)+'</span>':''}</span>
+        <span class="d">${a.nombre?'<b>'+esc(a.nombre)+'</b> · ':''}${a.rp_provisorio?'<span style="color:#B8860B">sin RP</span> · ':''}${a.caravana_control?'control '+esc(a.caravana_control)+(a.caravana_color?' '+esc(a.caravana_color):'')+' · ':''}${esc(a.categoria||'')} · ${sexo(a.sexo)}${a.pelo?' · '+esc(a.pelo):''}${a.fecha_nac?' · nac. '+fec(a.fecha_nac):''}${a.peso_actual?' · '+a.peso_actual+' kg':''}${a.madre_rp?' · madre '+esc(a.madre_rp):''}${a.padre_rp?' · padre '+esc(a.padre_rp):''}${a.estado&&a.estado!=='ACTIVO'?' · <span class="al">'+esc(a.estado)+'</span>':''}</span>
         <span class="c">${esc(a.coincide||'')}</span></div>`).join('')
         : `<div class="vacio">Nada con "${esc(q)}"</div>`;
       box.classList.add('on');
@@ -865,8 +867,17 @@ async function abrirFicha(rp){
         <div><span>Padre</span><b class="s">${f.padre_existe?link(O.padre):esc(O.padre||'—')}</b></div>
         <div><span>Madre</span><b class="s">${f.madre_existe?link(O.madre):esc(O.madre||'—')}</b></div>
         <div><span>HBA</span><b class="s">${esc(O.hba||'—')}</b></div>
-        <div><span>Caravana</span><b class="s">${esc(O.caravana||'—')}</b></div>
+        <div><span>Chip</span><b class="s">${esc(O.caravana||'—')}</b></div>
+        ${f.caravana_control?`<div><span>Caravana control</span><b class="s">${esc(f.caravana_control)}${f.caravana_color?' <span class="mut">'+esc(f.caravana_color)+'</span>':''}</b></div>`:''}
       </div>
+      ${f.rp_provisorio||!f.chip?`<div class="caja" style="margin:-10px 0 18px">
+        <h3>${f.rp_provisorio?'Asignar RP definitivo y chip':'Poner el chip'}</h3>
+        <p class="ayuda">${f.rp_provisorio?'Este ternero todavía tiene el RP provisorio '+esc(f.rp)+'. Todo lo que ya tiene sigue con él.':'Este animal no tiene chip cargado.'}</p>
+        <div class="inl">
+          ${f.rp_provisorio?'<input id="idRp" placeholder="RP definitivo" style="width:130px">':''}
+          <input id="idChip" placeholder="chip (15 dígitos)" style="width:190px">
+          <button class="btn" onclick="identificarDesdeFicha('${esc(f.rp)}')">Guardar</button>
+        </div></div>`:''}
       ${f.vientre ? `
       <h3 class="s">Historial de partos</h3>
       <div class="tw">
@@ -919,6 +930,17 @@ async function abrirFicha(rp){
       </div>
     </div>`;
 }
+async function identificarDesdeFicha(rp){
+  const rpN=(document.getElementById('idRp')||{}).value, chip=(document.getElementById('idChip')||{}).value;
+  if(!rpN && !chip) return toast('Poné el RP definitivo o el chip');
+  try{
+    const r=await fetch(urlCampo('/api/relevar/identificar'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filas:[{rp_actual:rp, rp:rpN||undefined, chip:chip||undefined}]})}).then(x=>x.json());
+    if(r.error) throw new Error(r.error);
+    const f=r.filas[0]; if(!f.ok) throw new Error(f.error);
+    toast(`Listo${f.avisos.length?' · '+f.avisos.join('; '):''}`,4000);
+    abrirFicha(f.rp_nuevo||rp); cargar();
+  }catch(e){ toast(e.message,4000); }
+}
 function pesarDesdeFicha(){ const c=document.getElementById('pesarCaja'); c.style.display=''; document.getElementById('pfPeso').focus(); }
 async function guardarPesada(rp){
   const peso=document.getElementById('pfPeso').value, fecha=document.getElementById('pfFecha').value, contexto=document.getElementById('pfCtx').value;
@@ -950,8 +972,10 @@ const REL = {
     campos:[['fecha','Fecha','date'],['contexto','Contexto','text','CONTROL']], ejemplo:'148 312\nN022 298,5\n11 430' },
   sanidad: { t:'Sanidad', ayuda:'Un producto a muchos animales. Elegí a quiénes: pegá los RP (uno por línea), un lote entero, o todos los activos.',
     campos:[['fecha','Fecha','date'],['producto','Producto','text'],['dosis','Dosis','text'],['motivo','Motivo','text']], ejemplo:'148\nN022\n11' },
-  nacimientos: { t:'Nacimientos', ayuda:'Una línea por ternero: <b>RP-ternero madre fecha sexo peso [pelaje] [padre]</b>. Ej: "C12 D035 12/08/2026 H 31,5 colorado Hércules". El sistema avisa si la madre ya tiene cría este año o no la encuentra.',
-    campos:[], ejemplo:'C12 D035 12/08/2026 H 31,5 colorado\nC13 49 15/08/2026 M 34' },
+  nacimientos: { t:'Nacimientos', ayuda:'Una línea por ternero: <b>caravana-control madre fecha sexo peso [pelaje] [padre]</b>. Ej: "150 D035 12/08/2026 H 31,5 colorado Hércules". El ternero queda con la control y un RP provisorio (C150) hasta que lo identifiques. Si ya tiene RP definitivo, elegí "RP definitivo" en el selector. Avisa si la madre ya tiene cría este año o no la encuentra.',
+    campos:[['identificacion','Primer dato de cada línea','select',['control','rp']],['color','Color de la caravana control','text','']], ejemplo:'150 D035 12/08/2026 H 31,5 colorado\n151 49 15/08/2026 M 34' },
+  identificar: { t:'Asignar RP / chip', ayuda:'El paso después del nacimiento: <b>control RP-definitivo [chip]</b>, una línea por ternero. Ej: "150 2077 320100362601234". Si sólo le ponés el chip: "150 320100362601234". Si el animal ya tiene RP y le cambiás el número, elegí "RP actual" en el selector. Lo que tenía (madre, pesadas, notas) sigue con él.',
+    campos:[['por','Primer dato de cada línea','select',['control','rp']],['color','Color (si hay dos controles iguales)','text','']], ejemplo:'150 2077 320100362601234\n151 2078' },
   mediciones: { t:'Mediciones', ayuda:'Condición corporal, circunferencia escrotal, altura, frame: <b>RP valor</b>, una por línea.',
     campos:[['fecha','Fecha','date'],['tipo','Medición','select',['CC','CE','ALTURA','FRAME','DOCILIDAD']]], ejemplo:'148 3.5\nN022 4' },
   notas: { t:'Notas', ayuda:'<b>RP texto</b>, una por línea. Las palabras clave se entienden solas: "renga", "mala madre", "abortó", "mansa".',
@@ -1033,8 +1057,10 @@ async function relevar(simular){
       body={ fecha:valorRel('fecha'), producto:valorRel('producto'), dosis:valorRel('dosis'), motivo:valorRel('motivo'), simular,
         ...(q==='todos'?{todos:true}:q==='lote'?{lote_id:Number(valorRel('lote'))}:{texto}) }; }
     else if(relTab==='nacimientos'){ url='/api/relevar/nacimientos';
-      const filas=texto.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{ const p=l.split(/[\s,;\t]+/); return { rp:p[0], madre_rp:p[1], fecha_nac:p[2], sexo:p[3], peso_nac:p[4], pelo:p[5], padre_rp:p.slice(6).join(' ')||undefined }; });
-      body={ filas, simular }; }
+      const porControl = (valorRel('identificacion')||'control')==='control';
+      const filas=texto.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{ const p=l.split(/[\s,;\t]+/); return { ...(porControl?{caravana_control:p[0]}:{rp:p[0]}), madre_rp:p[1], fecha_nac:p[2], sexo:p[3], peso_nac:p[4], pelo:p[5], padre_rp:p.slice(6).join(' ')||undefined }; });
+      body={ filas, simular, color: valorRel('color')||undefined }; }
+    else if(relTab==='identificar'){ url='/api/relevar/identificar'; body={ texto, por: valorRel('por')||'control', color: valorRel('color')||undefined, simular }; }
     else if(relTab==='csv'){ url='/api/importar/csv'; body={ texto, tipo:valorRel('tipo')||undefined, fecha:valorRel('fecha'), contexto:valorRel('contexto'), simular }; }
     if(!texto.trim() && !(relTab==='sanidad' && valorRel('quien')!=='rps')) throw new Error('No hay nada para cargar');
     const r=await fetch(urlCampo(url),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(x=>x.json());
@@ -1047,7 +1073,7 @@ async function relevar(simular){
       <div class="aviso ${r.mal&&!r.bien?'mal':r.mal?'':'ok'}" style="margin:0 0 10px"><b>${esc(r.mensaje)}</b>${r.tipo?` · detectado: ${r.tipo}${r.mapa?' · columnas: '+esc(Object.entries(r.mapa).map(([a,b])=>a+'='+b).join(', ')):''}`:''}</div>
       ${filas.length?`<div class="tw"><table><thead><tr><th>#</th><th>RP</th><th>Dato</th><th>Anterior</th><th>Resultado</th></tr></thead><tbody>
       ${filas.map(f=>`<tr><td class="mut">${f.fila||''}</td><td class="rp">${esc(f.rp||'')}</td>
-        <td>${f.peso!=null?f.peso+' kg':f.valor!=null?f.tipo+' '+f.valor:f.fecha_nac?`${f.sexo} · ${fec(f.fecha_nac)} · ${f.peso_nac??'—'} kg · madre ${esc(f.madre||'—')}`:f.texto?esc(f.texto):''}${f.fecha&&f.peso!=null?` <span class="mut">${fec(f.fecha)}</span>`:''}</td>
+        <td>${f.peso!=null?f.peso+' kg':f.valor!=null?f.tipo+' '+f.valor:f.fecha_nac?`${f.sexo} · ${fec(f.fecha_nac)} · ${f.peso_nac??'—'} kg · madre ${esc(f.madre||'—')}${f.control?' · control '+esc(f.control)+(f.color?' '+esc(f.color):'')+(f.provisorio?' → RP provisorio '+esc(f.rp):''):''}`:f.rp_nuevo||f.chip?`${f.rp_actual?esc(f.rp_actual)+' → ':''}${f.rp_nuevo?'RP '+esc(f.rp_nuevo):''}${f.chip?' · chip '+esc(f.chip):''}`:f.texto?esc(f.texto):''}${f.fecha&&f.peso!=null?` <span class="mut">${fec(f.fecha)}</span>`:''}</td>
         <td class="mut">${f.anterior!=null?`${f.anterior} kg (${fec(f.fecha_anterior)})${f.diferencia!=null?` <span class="${f.diferencia>=0?'bi':'al'}">${f.diferencia>0?'+':''}${f.diferencia}</span>`:''}${f.gdp!=null?` · ${f.gdp} kg/d`:''}`:''}</td>
         <td>${f.ok?(f.hecho?'<span class="tag t-ok">cargado</span>':'<span class="tag t-preñada">listo</span>'):`<span class="tag t-error">no</span> <span class="al">${esc(f.error||'')}</span>`}${f.avisos&&f.avisos.length?` <span class="mut">⚠ ${esc(f.avisos.join('; '))}</span>`:''}</td></tr>`).join('')}
       </tbody></table></div>`:''}`;
